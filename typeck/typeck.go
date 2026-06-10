@@ -206,6 +206,9 @@ func (c *Checker) checkEvaluate(s *parser.Evaluate) {
 
 func (c *Checker) checkHttpGet(s *parser.HttpGet) {
 	c.checkExpr(s.URL)
+	if s.Giving != nil && s.Mapping != nil {
+		c.err("giving and mapping are mutually exclusive", s.Line, s.Col)
+	}
 	if s.Giving != nil {
 		c.lookup(*s.Giving, s.Line, s.Col)
 	}
@@ -299,13 +302,16 @@ func (c *Checker) checkHttpPatch(s *parser.HttpPatch) {
 
 func (c *Checker) checkHttpDelete(s *parser.HttpDelete) {
 	c.checkExpr(s.URL)
+	if s.Giving != nil && s.Mapping != nil {
+		c.err("giving and mapping are mutually exclusive", s.Line, s.Col)
+	}
+	if s.Giving != nil {
+		c.lookup(*s.Giving, s.Line, s.Col)
+	}
 	if s.Mapping != nil {
 		if sym := c.lookup(*s.Mapping, s.Line, s.Col); sym != nil && sym.Type != TypeGroup {
 			c.err("mapping target '%s' is not a group item", s.Line, s.Col, *s.Mapping)
 		}
-	}
-	if s.Giving != nil {
-		c.lookup(*s.Giving, s.Line, s.Col)
 	}
 	if s.Status != "" {
 		if sym := c.lookup(s.Status, s.Line, s.Col); sym != nil && sym.Type != TypeNumericComp {

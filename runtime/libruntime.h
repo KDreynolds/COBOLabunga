@@ -22,6 +22,7 @@ typedef struct { const char *p; ptrdiff_t n; } _GoString_;
 #line 3 "runtime.go"
 
 #include <stdlib.h>
+#include <string.h>
 
 #line 1 "cgo-generated-wrapper"
 
@@ -84,6 +85,8 @@ extern int cob_http_post(char* url, char* body, char* response, long int respons
 extern int cob_http_put(char* url, char* body, char* response, long int responseCap, long int* responseLen, int* statusCode);
 extern int cob_http_patch(char* url, char* body, char* response, long int responseCap, long int* responseLen, int* statusCode);
 extern int cob_http_delete(char* url, char* response, long int responseCap, long int* responseLen, int* statusCode);
+extern int cob_json_str(char* body, long int bodyLen, char* fieldName, char* out, long int outSize);
+extern int cob_json_int(char* body, long int bodyLen, char* fieldName, int* out);
 
 #ifdef __cplusplus
 }

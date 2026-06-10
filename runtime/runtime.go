@@ -2,13 +2,16 @@ package main
 
 /*
 #include <stdlib.h>
+#include <string.h>
 */
 import "C"
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 	"unsafe"
 )
@@ -117,6 +120,81 @@ func toReader(body *C.char) io.Reader {
 	}
 	s := C.GoString(body)
 	return &stringReader{s: s}
+}
+
+// --- JSON field extraction ---
+
+func jsonKey(name string) string {
+	s := strings.ToLower(name)
+	s = strings.ReplaceAll(s, "-", "")
+	s = strings.ReplaceAll(s, "_", "")
+	return s
+}
+
+func jsonFind(data map[string]any, name string) (any, bool) {
+	key := jsonKey(name)
+	for k, v := range data {
+		if jsonKey(k) == key {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+//export cob_json_str
+func cob_json_str(body *C.char, bodyLen C.long, fieldName *C.char, out *C.char, outSize C.long) C.int {
+	jsonBytes := C.GoBytes(unsafe.Pointer(body), C.int(bodyLen))
+	var data map[string]any
+	if err := json.Unmarshal(jsonBytes, &data); err != nil {
+		return 1
+	}
+	name := C.GoString(fieldName)
+	val, ok := jsonFind(data, name)
+	if !ok {
+		return 1
+	}
+	str := fmt.Sprintf("%v", val)
+	if out != nil && outSize > 0 {
+		size := int(outSize)
+		buf := make([]byte, size)
+		copy(buf, str)
+		for i := len(str); i < size; i++ {
+			buf[i] = ' '
+		}
+		C.memcpy(unsafe.Pointer(out), unsafe.Pointer(&buf[0]), C.size_t(size))
+	}
+	return 0
+}
+
+//export cob_json_int
+func cob_json_int(body *C.char, bodyLen C.long, fieldName *C.char, out *C.int) C.int {
+	jsonBytes := C.GoBytes(unsafe.Pointer(body), C.int(bodyLen))
+	var data map[string]any
+	if err := json.Unmarshal(jsonBytes, &data); err != nil {
+		return 1
+	}
+	name := C.GoString(fieldName)
+	val, ok := jsonFind(data, name)
+	if !ok {
+		return 1
+	}
+	switch v := val.(type) {
+	case float64:
+		if out != nil {
+			*out = C.int(int(v))
+		}
+		return 0
+	case string:
+		var iv int
+		if _, err := fmt.Sscanf(v, "%d", &iv); err != nil {
+			return 1
+		}
+		if out != nil {
+			*out = C.int(iv)
+		}
+		return 0
+	}
+	return 1
 }
 
 func main() {}

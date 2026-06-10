@@ -79,10 +79,11 @@ func main() {
 	needHTTP := usesHTTP(prog)
 	if needHTTP {
 		// Build Go runtime as C archive
-		runtimeLib := "runtime/libruntime.a"
+		runtimeDir := "runtime"
+		runtimeLib := runtimeDir + "/libruntime.a"
 		buildCmd := exec.Command("go", "build", "-buildmode=c-archive",
-			"-o", runtimeLib, ".")
-		buildCmd.Dir = "runtime"
+			"-o", filepath.Base(runtimeLib), ".")
+		buildCmd.Dir = runtimeDir
 		if out, err := buildCmd.CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "runtime build error: %v\n%s\n", err, out)
 			os.Exit(1)

@@ -40,6 +40,8 @@ func (c *Codegen) Generate() string {
 	c.emit("declare i32 @cob_http_put(ptr, ptr, ptr, i64, ptr, ptr)")
 	c.emit("declare i32 @cob_http_patch(ptr, ptr, ptr, i64, ptr, ptr)")
 	c.emit("declare i32 @cob_http_delete(ptr, ptr, i64, ptr, ptr)")
+	c.emit("declare i32 @cob_json_str(ptr, i64, ptr, ptr, i64)")
+	c.emit("declare i32 @cob_json_int(ptr, i64, ptr, ptr)")
 	c.emit("")
 
 	c.emitWorkingStorage()
@@ -76,18 +78,20 @@ func (c *Codegen) emitWorkingStorage() {
 }
 
 func (c *Codegen) emitDataItem(item *parser.DataItem) {
-	if len(item.Children) > 0 || item.Picture == nil {
-		return
+	if item.Picture != nil {
+		name := sanitize(item.Name)
+		switch item.Picture.Type {
+		case parser.PicX:
+			size := item.Picture.Size
+			init := c.picXInitializer(item.Value, size)
+			c.emit("@%s = global [%d x i8] %s", name, size+1, init)
+		case parser.Pic9:
+			init := c.pic9Initializer(item.Value)
+			c.emit("@%s = global i32 %s", name, init)
+		}
 	}
-	name := sanitize(item.Name)
-	switch item.Picture.Type {
-	case parser.PicX:
-		size := item.Picture.Size
-		init := c.picXInitializer(item.Value, size)
-		c.emit("@%s = global [%d x i8] %s", name, size+1, init)
-	case parser.Pic9:
-		init := c.pic9Initializer(item.Value)
-		c.emit("@%s = global i32 %s", name, init)
+	for _, child := range item.Children {
+		c.emitDataItem(child)
 	}
 }
 
@@ -379,30 +383,30 @@ func (c *Codegen) emitExprPtr(expr parser.Expression) string {
 }
 
 func (c *Codegen) emitHttpGet(s *parser.HttpGet) {
-	c.emitHttpCall("cob_http_get", s.URL, nil, s.Giving, s.Status, s.OnException, s.NotOnException, false)
+	c.emitHttpCall("cob_http_get", s.URL, nil, s.Giving, s.Mapping, s.Status, s.OnException, s.NotOnException, false)
 }
 
 func (c *Codegen) emitHttpPost(s *parser.HttpPost) {
 	sending := parser.Expression(s.Sending)
-	c.emitHttpCall("cob_http_post", s.URL, sending, s.Giving, s.Status, s.OnException, s.NotOnException, true)
+	c.emitHttpCall("cob_http_post", s.URL, sending, s.Giving, s.Mapping, s.Status, s.OnException, s.NotOnException, true)
 }
 
 func (c *Codegen) emitHttpPut(s *parser.HttpPut) {
 	sending := parser.Expression(s.Sending)
-	c.emitHttpCall("cob_http_put", s.URL, sending, s.Giving, s.Status, s.OnException, s.NotOnException, true)
+	c.emitHttpCall("cob_http_put", s.URL, sending, s.Giving, s.Mapping, s.Status, s.OnException, s.NotOnException, true)
 }
 
 func (c *Codegen) emitHttpPatch(s *parser.HttpPatch) {
 	sending := parser.Expression(s.Sending)
-	c.emitHttpCall("cob_http_patch", s.URL, sending, s.Giving, s.Status, s.OnException, s.NotOnException, true)
+	c.emitHttpCall("cob_http_patch", s.URL, sending, s.Giving, s.Mapping, s.Status, s.OnException, s.NotOnException, true)
 }
 
 func (c *Codegen) emitHttpDelete(s *parser.HttpDelete) {
-	c.emitHttpCall("cob_http_delete", s.URL, nil, s.Giving, s.Status, s.OnException, s.NotOnException, false)
+	c.emitHttpCall("cob_http_delete", s.URL, nil, s.Giving, s.Mapping, s.Status, s.OnException, s.NotOnException, false)
 }
 
 func (c *Codegen) emitHttpCall(funcName string, urlExpr parser.Expression, sendingExpr parser.Expression,
-	giving *string, status string, onException, notOnException []parser.Statement, hasBody bool) {
+	giving, mapping *string, status string, onException, notOnException []parser.Statement, hasBody bool) {
 
 	urlPtr := c.emitExprPtr(urlExpr)
 
@@ -411,8 +415,13 @@ func (c *Codegen) emitHttpCall(funcName string, urlExpr parser.Expression, sendi
 		bodyPtr = c.emitExprPtr(sendingExpr)
 	}
 
+	// Response buffer: either the GIVING field or a temp alloca for MAPPING
 	respPtr := "null"
 	respSize := int64(0)
+	lenReg := c.nextRegister()
+	c.emit("%%%s = alloca i64, i64 1", lenReg)
+	c.emit("store i64 0, ptr %%%s", lenReg)
+
 	if giving != nil {
 		name := sanitize(*giving)
 		reg := c.nextRegister()
@@ -421,11 +430,16 @@ func (c *Codegen) emitHttpCall(funcName string, urlExpr parser.Expression, sendi
 			reg, sz, name)
 		respPtr = "%" + reg
 		respSize = int64(sz)
+	} else if mapping != nil {
+		// Allocate temp buffer for JSON response, 4096 bytes
+		bufReg := c.nextRegister()
+		c.emit("%%%s = alloca [4096 x i8], i64 1", bufReg)
+		respReg := c.nextRegister()
+		c.emit("%%%s = getelementptr [4096 x i8], ptr %%%s, i64 0, i64 0",
+			respReg, bufReg)
+		respPtr = "%" + respReg
+		respSize = 4096
 	}
-
-	lenReg := c.nextRegister()
-	c.emit("%%%s = alloca i64, i64 1", lenReg)
-	c.emit("store i64 0, ptr %%%s", lenReg)
 
 	statusPtr := "null"
 	if status != "" {
@@ -439,6 +453,11 @@ func (c *Codegen) emitHttpCall(funcName string, urlExpr parser.Expression, sendi
 	} else {
 		c.emit("%%%s = call i32 @%s(ptr %s, ptr %s, i64 %d, ptr %%%s, ptr %s)",
 			resultReg, funcName, urlPtr, respPtr, respSize, lenReg, statusPtr)
+	}
+
+	// If MAPPING, emit per-field JSON extraction
+	if mapping != nil {
+		c.emitJsonMapping(*mapping, respPtr, lenReg)
 	}
 
 	hasOn := len(onException) > 0
@@ -469,6 +488,40 @@ func (c *Codegen) emitHttpCall(funcName string, urlExpr parser.Expression, sendi
 		c.indent--
 
 		c.emit("%s:", labelMerge)
+	}
+}
+
+func (c *Codegen) emitJsonMapping(groupName, respPtr, lenReg string) {
+	children := c.findGroupChildren(groupName)
+	if children == nil {
+		return
+	}
+	lenV := c.nextRegister()
+	c.emit("%%%s = load i64, ptr %%%s", lenV, lenReg)
+
+	for _, child := range children {
+		if child.Picture == nil {
+			continue
+		}
+		fn := c.addStringConst([]byte(child.Name))
+		fnSz := len(child.Name) + 1
+		fnGep := fmt.Sprintf("getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0)", fnSz, fn)
+
+		switch child.Picture.Type {
+		case parser.PicX:
+			fieldReg := c.nextRegister()
+			sz := child.Picture.Size + 1
+			c.emit("%%%s = getelementptr [%d x i8], ptr @%s, i64 0, i64 0",
+				fieldReg, sz, sanitize(child.Name))
+			discard := c.nextRegister()
+			c.emit("%%%s = call i32 @cob_json_str(ptr %s, i64 %%%s, ptr %s, ptr %%%s, i64 %d)",
+				discard, respPtr, lenV, fnGep, fieldReg, int64(child.Picture.Size))
+		case parser.Pic9:
+			fieldPtr := "@" + sanitize(child.Name)
+			discard := c.nextRegister()
+			c.emit("%%%s = call i32 @cob_json_int(ptr %s, i64 %%%s, ptr %s, ptr %s)",
+				discard, respPtr, lenV, fnGep, fieldPtr)
+		}
 	}
 }
 
@@ -537,4 +590,25 @@ func findFieldSize(name string, items []*parser.DataItem) int {
 		}
 	}
 	return 0
+}
+
+func (c *Codegen) findGroupChildren(name string) []*parser.DataItem {
+	if c.prog.WorkingStorage == nil {
+		return nil
+	}
+	return findGroupItemChildren(name, c.prog.WorkingStorage.Items)
+}
+
+func findGroupItemChildren(name string, items []*parser.DataItem) []*parser.DataItem {
+	for _, item := range items {
+		if item.Name == name {
+			return item.Children
+		}
+		if len(item.Children) > 0 {
+			if found := findGroupItemChildren(name, item.Children); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
 }

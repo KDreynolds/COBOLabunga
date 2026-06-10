@@ -154,10 +154,11 @@ COBOLabunga/
 ├── runtime/
 │   ├── go.mod           # Separate module for CGO build
 │   └── runtime.go       # Pure Go HTTP client (net/http, //export cgo)
-└── examples/
-    ├── hello.cbl        # Hello world
-    ├── compute.cbl      # MOVE / COMPUTE / DISPLAY
-    └── httpget.cbl      # HTTP-GET with GIVING + STATUS
+    └── examples/
+        ├── hello.cbl        # Hello world
+        ├── compute.cbl      # MOVE / COMPUTE / DISPLAY
+        ├── httpget.cbl      # HTTP-GET with GIVING + STATUS
+        └── httpmap.cbl      # HTTP-GET with MAPPING (JSON → fields)
 ```
 
 ## Roadmap
@@ -170,8 +171,9 @@ COBOLabunga/
 - [x] HTTP-GET with GIVING and STATUS
 - [x] ON EXCEPTION / NOT ON EXCEPTION branching
 - [x] HTTP-POST / PUT / PATCH / DELETE (codegen + runtime)
-- [ ] MAPPING phrase (JSON ↔ DATA DIVISION fields)
-- [ ] PERFORM VARYING / UNTIL
+- [x] MAPPING phrase (JSON ↔ DATA DIVISION fields)
+- [x] GIVING / MAPPING mutual exclusion checking
+- [ ] PERFORM VARYING / UNTIL (loop construct)
 - [ ] HTTP-LISTEN / HTTP-RESPOND (server-side)
 - [ ] WASM target
 - [ ] Full-stack COBOL demo (HTTP-GET → parse JSON → DISPLAY)
