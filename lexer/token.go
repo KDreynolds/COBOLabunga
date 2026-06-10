@@ -37,6 +37,13 @@ const (
 	STOP
 	RUN
 
+	// PERFORM modifiers
+	VARYING
+	UNTIL
+	FROM
+	BY
+	END_PERFORM
+
 	// HTTP keywords
 	HTTP_GET
 	HTTP_POST
@@ -67,6 +74,8 @@ const (
 	MINUS
 	MULTIPLY
 	DIVIDE
+	GREATER
+	LESS
 )
 
 var tokenNames = map[TokenType]string{
@@ -116,6 +125,11 @@ var tokenNames = map[TokenType]string{
 	STRING_LITERAL:  "STRING_LITERAL",
 	INTEGER_LITERAL: "INTEGER_LITERAL",
 	IDENTIFIER:      "IDENTIFIER",
+	VARYING:         "VARYING",
+	UNTIL:           "UNTIL",
+	FROM:            "FROM",
+	BY:              "BY",
+	END_PERFORM:     "END-PERFORM",
 	PERIOD:          ".",
 	LPAREN:          "(",
 	RPAREN:          ")",
@@ -124,6 +138,8 @@ var tokenNames = map[TokenType]string{
 	MINUS:           "-",
 	MULTIPLY:        "*",
 	DIVIDE:          "/",
+	GREATER:         ">",
+	LESS:            "<",
 }
 
 func (t TokenType) String() string {

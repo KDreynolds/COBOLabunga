@@ -77,9 +77,18 @@ type Display struct {
 	Col   int
 }
 
+type VaryingPhrase struct {
+	Variable string
+	From     Expression
+	By       Expression
+	Until    Expression
+}
+
 type Perform struct {
 	Paragraph string
 	Times     Expression
+	Varying   *VaryingPhrase
+	Body      []Statement
 	Line      int
 	Col       int
 }
@@ -224,6 +233,11 @@ const (
 	OpSub
 	OpMul
 	OpDiv
+	OpGt
+	OpLt
+	OpEq
+	OpGe
+	OpLe
 )
 
 func (*IdentifierExpr) exprTag()     {}
@@ -295,11 +309,21 @@ func printStatement(stmt Statement, indent int) {
 	case *Display:
 		fmt.Printf("%sDISPLAY %s\n", prefix, exprListStr(s.Items))
 	case *Perform:
-		t := ""
-		if s.Times != nil {
-			t = " " + exprStr(s.Times) + " TIMES"
+		if s.Varying != nil {
+			fmt.Printf("%sPERFORM VARYING %s FROM %s BY %s UNTIL %s\n",
+				prefix, s.Varying.Variable, exprStr(s.Varying.From),
+				exprStr(s.Varying.By), exprStr(s.Varying.Until))
+			for _, st := range s.Body {
+				printStatement(st, indent+1)
+			}
+			fmt.Printf("%sEND-PERFORM\n", prefix)
+		} else {
+			t := ""
+			if s.Times != nil {
+				t = " " + exprStr(s.Times) + " TIMES"
+			}
+			fmt.Printf("%sPERFORM %s%s\n", prefix, s.Paragraph, t)
 		}
-		fmt.Printf("%sPERFORM %s%s\n", prefix, s.Paragraph, t)
 	case *If:
 		fmt.Printf("%sIF %s\n", prefix, exprStr(s.Condition))
 		for _, st := range s.ThenBody {
@@ -388,6 +412,16 @@ func exprStr(e Expression) string {
 			op = "*"
 		case OpDiv:
 			op = "/"
+		case OpGt:
+			op = ">"
+		case OpLt:
+			op = "<"
+		case OpEq:
+			op = "="
+		case OpGe:
+			op = ">="
+		case OpLe:
+			op = "<="
 		}
 		return "(" + exprStr(v.Left) + " " + op + " " + exprStr(v.Right) + ")"
 	}

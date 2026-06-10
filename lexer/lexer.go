@@ -68,6 +68,11 @@ func buildKeywordMap() map[string]TokenType {
 		"EXCEPTION":       EXCEPTION,
 		"NOT":             NOT,
 		"END-HTTP":        END_HTTP,
+		"VARYING":         VARYING,
+		"UNTIL":           UNTIL,
+		"FROM":            FROM,
+		"BY":              BY,
+		"END-PERFORM":     END_PERFORM,
 	}
 }
 
@@ -164,6 +169,21 @@ func (l *Lexer) Next() Token {
 	case ch == '/':
 		l.read()
 		return Token{Type: DIVIDE, Literal: "/", Line: line, Column: col}
+	case ch == '>':
+		l.read()
+		if next, ok := l.peek(); ok && next == '=' {
+			l.read()
+			return Token{Type: GREATER, Literal: ">=", Line: line, Column: col}
+		}
+		return Token{Type: GREATER, Literal: ">", Line: line, Column: col}
+	case ch == '<':
+		l.read()
+		if next, ok := l.peek(); ok && (next == '=' || next == '>') {
+			ch2 := next
+			l.read()
+			return Token{Type: LESS, Literal: string(ch) + string(ch2), Line: line, Column: col}
+		}
+		return Token{Type: LESS, Literal: "<", Line: line, Column: col}
 	case ch == '"' || ch == '\'':
 		return l.readString(ch, line, col)
 	case ch >= '0' && ch <= '9':

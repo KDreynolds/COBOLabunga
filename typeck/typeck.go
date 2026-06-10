@@ -175,8 +175,27 @@ func (c *Checker) checkDisplay(s *parser.Display) {
 }
 
 func (c *Checker) checkPerform(s *parser.Perform) {
-	// Paragraph names are in the procedure division, not data division
-	// For v0.1, we just trust they exist (forward reference is valid in COBOL)
+	if s.Varying != nil {
+		vp := s.Varying
+		// Varying variable must exist and be numeric
+		vSym := c.lookup(vp.Variable, s.Line, s.Col)
+		if vSym != nil {
+			if vSym.Type == TypeAlphanumeric {
+				c.err("varying variable '%s' must be numeric", s.Line, s.Col, vp.Variable)
+			}
+		}
+		// FROM, BY, UNTIL expressions are checked
+		c.checkExpr(vp.From)
+		c.checkExpr(vp.By)
+		c.checkExpr(vp.Until)
+		// Check inline body
+		for _, stmt := range s.Body {
+			c.checkStatement(stmt)
+		}
+	} else if s.Paragraph != "" {
+		// Paragraph names are in the procedure division, not data division
+		// For v0.1, we just trust they exist (forward reference is valid in COBOL)
+	}
 }
 
 func (c *Checker) checkIf(s *parser.If) {

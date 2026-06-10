@@ -280,26 +280,88 @@ func (c *Codegen) emitExpr(expr parser.Expression) string {
 		left := c.emitExpr(e.Left)
 		right := c.emitExpr(e.Right)
 		tmp := c.nextRegister()
-		op := ""
+
 		switch e.Operator {
 		case parser.OpAdd:
-			op = "add"
+			c.emit("%%%s = add i32 %s, %s", tmp, left, right)
 		case parser.OpSub:
-			op = "sub"
+			c.emit("%%%s = sub i32 %s, %s", tmp, left, right)
 		case parser.OpMul:
-			op = "mul"
+			c.emit("%%%s = mul i32 %s, %s", tmp, left, right)
 		case parser.OpDiv:
-			op = "sdiv"
+			c.emit("%%%s = sdiv i32 %s, %s", tmp, left, right)
+		case parser.OpGt:
+			cmptmp := c.nextRegister()
+			c.emit("%%%s = icmp sgt i32 %s, %s", cmptmp, left, right)
+			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+		case parser.OpLt:
+			cmptmp := c.nextRegister()
+			c.emit("%%%s = icmp slt i32 %s, %s", cmptmp, left, right)
+			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+		case parser.OpEq:
+			cmptmp := c.nextRegister()
+			c.emit("%%%s = icmp eq i32 %s, %s", cmptmp, left, right)
+			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+		case parser.OpGe:
+			cmptmp := c.nextRegister()
+			c.emit("%%%s = icmp sge i32 %s, %s", cmptmp, left, right)
+			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+		case parser.OpLe:
+			cmptmp := c.nextRegister()
+			c.emit("%%%s = icmp sle i32 %s, %s", cmptmp, left, right)
+			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
 		}
-		c.emit("%%%s = %s i32 %s, %s", tmp, op, left, right)
 		return "%" + tmp
 	}
 	return "0"
 }
 
 func (c *Codegen) emitPerform(s *parser.Perform) {
+	if s.Varying != nil {
+		c.emitPerformVarying(s)
+		return
+	}
 	name := sanitize(s.Paragraph)
 	c.emit("call void @%s()", name)
+}
+
+func (c *Codegen) emitPerformVarying(s *parser.Perform) {
+	vp := s.Varying
+	varName := sanitize(vp.Variable)
+
+	// Initialize: var = from
+	fromVal := c.emitExpr(vp.From)
+	c.emit("store i32 %s, ptr @%s", fromVal, varName)
+
+	labelCond := c.nextLabel("perf.cond")
+	labelBody := c.nextLabel("perf.body")
+	labelEnd := c.nextLabel("perf.end")
+
+	c.emit("br label %%%s", labelCond)
+
+	// Condition check
+	c.emit("%s:", labelCond)
+	c.indent++
+	condVal := c.emitExpr(vp.Until)
+	c.emit("%%perf_done = icmp ne i32 %s, 0", condVal)
+	c.emit("br i1 %%perf_done, label %%%s, label %%%s", labelEnd, labelBody)
+	c.indent--
+
+	// Loop body
+	c.emit("%s:", labelBody)
+	c.indent++
+	c.emitStatements(s.Body)
+	// Increment: var = var + by
+	varReg := c.nextRegister()
+	byVal := c.emitExpr(vp.By)
+	c.emit("%%%s = load i32, ptr @%s", varReg, varName)
+	nextReg := c.nextRegister()
+	c.emit("%%%s = add i32 %%%s, %s", nextReg, varReg, byVal)
+	c.emit("store i32 %%%s, ptr @%s", nextReg, varName)
+	c.emit("br label %%%s", labelCond)
+	c.indent--
+
+	c.emit("%s:", labelEnd)
 }
 
 func (c *Codegen) emitIf(s *parser.If) {

@@ -390,7 +390,7 @@ func (p *Parser) isStatementEnd() bool {
 func (p *Parser) isScopeTerminator() bool {
 	switch p.peek().Type {
 	case lexer.ELSE, lexer.END_IF, lexer.WHEN, lexer.END_EVALUATE,
-		lexer.END_HTTP:
+		lexer.END_HTTP, lexer.END_PERFORM:
 		return true
 	}
 	return false
@@ -504,11 +504,16 @@ func (p *Parser) parsePerformStatement() *Perform {
 	tok := p.advance() // consume PERFORM
 	stmt := &Perform{Line: tok.Line, Col: tok.Column}
 
+	// PERFORM VARYING ...
+	if p.match(lexer.VARYING) {
+		return p.parsePerformVarying(stmt)
+	}
+
+	// PERFORM paragraph-name ...
 	if p.peek().Type == lexer.IDENTIFIER {
 		stmt.Paragraph = p.advance().Literal
 	} else {
-		// inline PERFORM? skip for v0.1
-		p.error("expected paragraph name in PERFORM")
+		p.error("expected paragraph name or VARYING in PERFORM")
 		return stmt
 	}
 
@@ -518,14 +523,68 @@ func (p *Parser) parsePerformStatement() *Perform {
 		val, _ := strconv.Atoi(tok.Literal)
 		stmt.Times = &IntegerLiteralExpr{Value: val}
 		if p.peek().Type == lexer.TIMES {
-			// Match both: PERFORM X 5 TIMES or PERFORM X TIMES 5
-			// COBOL says PERFORM X 5 TIMES, so times is optional
-			// We already consumed the integer, now check for TIMES
-			if p.peek().Type == lexer.TIMES {
-				p.advance() // consume TIMES
-			}
+			p.advance() // consume TIMES
 		}
 		return stmt
+	}
+
+	return stmt
+}
+
+func (p *Parser) parsePerformVarying(stmt *Perform) *Perform {
+	vp := &VaryingPhrase{}
+
+	// VARYING variable
+	if p.peek().Type == lexer.IDENTIFIER {
+		vp.Variable = p.advance().Literal
+	} else {
+		p.error("expected variable name after VARYING")
+		return stmt
+	}
+
+	// FROM expression
+	if p.match(lexer.FROM) {
+		vp.From = p.parseExpression()
+	} else {
+		p.error("expected FROM in PERFORM VARYING")
+		return stmt
+	}
+
+	// BY expression
+	if p.match(lexer.BY) {
+		vp.By = p.parseExpression()
+	} else {
+		p.error("expected BY in PERFORM VARYING")
+		return stmt
+	}
+
+	// UNTIL condition
+	if p.match(lexer.UNTIL) {
+		vp.Until = p.parseExpression()
+	} else {
+		p.error("expected UNTIL in PERFORM VARYING")
+		return stmt
+	}
+
+	stmt.Varying = vp
+
+	// Parse body statements until END-PERFORM
+	for !p.atEnd() {
+		if p.match(lexer.END_PERFORM) {
+			break
+		}
+		if p.peek().Type == lexer.PERIOD {
+			break
+		}
+		s := p.parseStatement()
+		if s != nil {
+			stmt.Body = append(stmt.Body, s)
+		} else {
+			break
+		}
+		if p.match(lexer.PERIOD) {
+			break
+		}
 	}
 
 	return stmt
@@ -910,7 +969,42 @@ func (p *Parser) parseHttpCommonDelete(stmt *HttpDelete) {
 // --- Expression parsing ---
 
 func (p *Parser) parseExpression() Expression {
-	return p.parseAddSub()
+	return p.parseComparison()
+}
+
+func (p *Parser) parseComparison() Expression {
+	left := p.parseAddSub()
+	for !p.atEnd() {
+		matched := true
+		switch {
+		case p.match(lexer.GREATER):
+			right := p.parseAddSub()
+			if p.previous().Literal == ">=" {
+				left = &BinaryExpr{Left: left, Operator: OpGe, Right: right}
+			} else {
+				left = &BinaryExpr{Left: left, Operator: OpGt, Right: right}
+			}
+		case p.match(lexer.LESS):
+			right := p.parseAddSub()
+			lit := p.previous().Literal
+			if lit == "<=" {
+				left = &BinaryExpr{Left: left, Operator: OpLe, Right: right}
+			} else if lit == "<>" {
+				left = &BinaryExpr{Left: left, Operator: OpLt, Right: right}
+			} else {
+				left = &BinaryExpr{Left: left, Operator: OpLt, Right: right}
+			}
+		case p.match(lexer.EQUALS):
+			right := p.parseAddSub()
+			left = &BinaryExpr{Left: left, Operator: OpEq, Right: right}
+		default:
+			matched = false
+		}
+		if !matched {
+			break
+		}
+	}
+	return left
 }
 
 func (p *Parser) parseAddSub() Expression {
