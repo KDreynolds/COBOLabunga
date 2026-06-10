@@ -1,0 +1,9 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. hello.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-MESSAGE    PIC X(50) VALUE "Hello, COBOLabunga!".
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           DISPLAY WS-MESSAGE
+           STOP RUN.

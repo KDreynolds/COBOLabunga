@@ -1,0 +1,409 @@
+package typeck
+
+import (
+	"fmt"
+
+	"github.com/KDreynolds/COBOLabunga/parser"
+)
+
+type SymType int
+
+const (
+	TypeAlphanumeric SymType = iota
+	TypeNumeric
+	TypeNumericComp
+	TypeGroup
+)
+
+type Symbol struct {
+	Name   string
+	Type   SymType
+	Size   int
+	Level  int
+	Line   int
+	Column int
+}
+
+type Checker struct {
+	symbols map[string]*Symbol
+	errs    []error
+}
+
+func New() *Checker {
+	return &Checker{
+		symbols: make(map[string]*Symbol),
+	}
+}
+
+func (c *Checker) Check(prog *parser.Program) []error {
+	if prog.WorkingStorage != nil {
+		c.buildSymbolTable(prog.WorkingStorage.Items)
+	}
+
+	if prog.ProcedureDivision != nil {
+		for _, para := range prog.ProcedureDivision.Paragraphs {
+			c.checkParagraph(para)
+		}
+	}
+
+	return c.errs
+}
+
+// --- Symbol table building ---
+
+func (c *Checker) buildSymbolTable(items []*parser.DataItem) {
+	for _, item := range items {
+		c.addSymbol(item)
+	}
+}
+
+func (c *Checker) addSymbol(item *parser.DataItem) {
+	sym := &Symbol{
+		Name:   item.Name,
+		Level:  item.Level,
+		Line:   item.Line,
+		Column: item.Column,
+	}
+
+	if len(item.Children) > 0 {
+		sym.Type = TypeGroup
+	} else if item.Picture != nil {
+		switch item.Picture.Type {
+		case parser.PicX:
+			sym.Type = TypeAlphanumeric
+		case parser.Pic9:
+			if item.Picture.IsComp {
+				sym.Type = TypeNumericComp
+			} else {
+				sym.Type = TypeNumeric
+			}
+		}
+		sym.Size = item.Picture.Size
+	}
+
+	if existing, ok := c.symbols[item.Name]; ok {
+		c.errs = append(c.errs, fmt.Errorf(
+			"line %d:%d: duplicate symbol '%s' (first defined at line %d:%d)",
+			item.Line, item.Column, item.Name, existing.Line, existing.Column))
+	} else {
+		c.symbols[item.Name] = sym
+	}
+
+	// Process children recursively
+	if len(item.Children) > 0 {
+		c.buildSymbolTable(item.Children)
+	}
+}
+
+// --- Procedure Division validation ---
+
+func (c *Checker) checkParagraph(para *parser.Paragraph) {
+	for _, stmt := range para.Statements {
+		c.checkStatement(stmt)
+	}
+}
+
+func (c *Checker) checkStatement(stmt parser.Statement) {
+	switch s := stmt.(type) {
+	case *parser.Move:
+		c.checkMove(s)
+	case *parser.Compute:
+		c.checkCompute(s)
+	case *parser.Display:
+		c.checkDisplay(s)
+	case *parser.Perform:
+		c.checkPerform(s)
+	case *parser.If:
+		c.checkIf(s)
+	case *parser.Evaluate:
+		c.checkEvaluate(s)
+	case *parser.StopRun:
+		// always valid
+	case *parser.HttpGet:
+		c.checkHttpGet(s)
+	case *parser.HttpPost:
+		c.checkHttpPost(s)
+	case *parser.HttpPut:
+		c.checkHttpPut(s)
+	case *parser.HttpPatch:
+		c.checkHttpPatch(s)
+	case *parser.HttpDelete:
+		c.checkHttpDelete(s)
+	}
+}
+
+func (c *Checker) checkMove(s *parser.Move) {
+	fromType, _ := c.exprType(s.From)
+	toSym := c.lookup(s.To, s.Line, s.Col)
+
+	if toSym == nil {
+		return // error already reported
+	}
+
+	if fromType != nil && !c.isMoveCompatible(fromType, toSym) {
+		c.err("move type mismatch: cannot move %s to %s field '%s'",
+			s.Line, s.Col, typeName(fromType), typeName(&Symbol{Type: toSym.Type}), s.To)
+	}
+}
+
+func (c *Checker) isMoveCompatible(from *Symbol, to *Symbol) bool {
+	// In COBOL, most moves are valid; we flag obvious mismatches
+	if to.Type == TypeAlphanumeric {
+		return from.Type == TypeAlphanumeric || from.Type == TypeNumeric || from.Type == TypeNumericComp
+	}
+	if to.Type == TypeNumeric || to.Type == TypeNumericComp {
+		return from.Type == TypeNumeric || from.Type == TypeNumericComp || from.Type == TypeAlphanumeric
+	}
+	return true
+}
+
+func (c *Checker) checkCompute(s *parser.Compute) {
+	target := c.lookup(s.Target, s.Line, s.Col)
+	if target == nil {
+		return
+	}
+	if target.Type == TypeAlphanumeric {
+		c.err("compute target '%s' is alphanumeric, expected numeric", s.Line, s.Col, s.Target)
+	}
+	c.checkExpr(s.Expr)
+}
+
+func (c *Checker) checkDisplay(s *parser.Display) {
+	for _, item := range s.Items {
+		c.checkExpr(item)
+	}
+}
+
+func (c *Checker) checkPerform(s *parser.Perform) {
+	// Paragraph names are in the procedure division, not data division
+	// For v0.1, we just trust they exist (forward reference is valid in COBOL)
+}
+
+func (c *Checker) checkIf(s *parser.If) {
+	c.checkExpr(s.Condition)
+	for _, stmt := range s.ThenBody {
+		c.checkStatement(stmt)
+	}
+	for _, stmt := range s.ElseBody {
+		c.checkStatement(stmt)
+	}
+}
+
+func (c *Checker) checkEvaluate(s *parser.Evaluate) {
+	c.checkExpr(s.Subject)
+	for _, wc := range s.WhenClauses {
+		for _, val := range wc.Values {
+			c.checkExpr(val)
+		}
+		for _, stmt := range wc.Body {
+			c.checkStatement(stmt)
+		}
+	}
+	for _, stmt := range s.WhenOther {
+		c.checkStatement(stmt)
+	}
+}
+
+func (c *Checker) checkHttpGet(s *parser.HttpGet) {
+	c.checkExpr(s.URL)
+	if s.Giving != nil {
+		c.lookup(*s.Giving, s.Line, s.Col)
+	}
+	if s.Mapping != nil {
+		if sym := c.lookup(*s.Mapping, s.Line, s.Col); sym != nil && sym.Type != TypeGroup {
+			c.err("mapping target '%s' is not a group item", s.Line, s.Col, *s.Mapping)
+		}
+	}
+	if s.Status != "" {
+		if sym := c.lookup(s.Status, s.Line, s.Col); sym != nil && sym.Type != TypeNumericComp {
+			c.err("status field '%s' must be PIC 9(n) COMP", s.Line, s.Col, s.Status)
+		}
+	}
+	if s.Headers != nil {
+		c.checkHeaders(s.Headers, s.Line, s.Col)
+	}
+	c.checkExceptionBlocks(s.OnException, s.NotOnException)
+}
+
+func (c *Checker) checkHttpPost(s *parser.HttpPost) {
+	c.checkExpr(s.URL)
+	if s.Sending != nil && s.Mapping != nil {
+		c.err("sending and mapping are mutually exclusive", s.Line, s.Col)
+	}
+	if s.Mapping != nil {
+		if sym := c.lookup(*s.Mapping, s.Line, s.Col); sym != nil && sym.Type != TypeGroup {
+			c.err("mapping target '%s' is not a group item", s.Line, s.Col, *s.Mapping)
+		}
+	}
+	if s.Giving != nil {
+		c.lookup(*s.Giving, s.Line, s.Col)
+	}
+	if s.Status != "" {
+		if sym := c.lookup(s.Status, s.Line, s.Col); sym != nil && sym.Type != TypeNumericComp {
+			c.err("status field '%s' must be PIC 9(n) COMP", s.Line, s.Col, s.Status)
+		}
+	}
+	if s.Headers != nil {
+		c.checkHeaders(s.Headers, s.Line, s.Col)
+	}
+	c.checkExceptionBlocks(s.OnException, s.NotOnException)
+}
+
+func (c *Checker) checkHttpPut(s *parser.HttpPut) {
+	c.checkExpr(s.URL)
+	if s.Sending != nil && s.Mapping != nil {
+		c.err("sending and mapping are mutually exclusive", s.Line, s.Col)
+	}
+	if s.Mapping != nil {
+		if sym := c.lookup(*s.Mapping, s.Line, s.Col); sym != nil && sym.Type != TypeGroup {
+			c.err("mapping target '%s' is not a group item", s.Line, s.Col, *s.Mapping)
+		}
+	}
+	if s.Giving != nil {
+		c.lookup(*s.Giving, s.Line, s.Col)
+	}
+	if s.Status != "" {
+		if sym := c.lookup(s.Status, s.Line, s.Col); sym != nil && sym.Type != TypeNumericComp {
+			c.err("status field '%s' must be PIC 9(n) COMP", s.Line, s.Col, s.Status)
+		}
+	}
+	if s.Headers != nil {
+		c.checkHeaders(s.Headers, s.Line, s.Col)
+	}
+	c.checkExceptionBlocks(s.OnException, s.NotOnException)
+}
+
+func (c *Checker) checkHttpPatch(s *parser.HttpPatch) {
+	c.checkExpr(s.URL)
+	if s.Sending != nil && s.Mapping != nil {
+		c.err("sending and mapping are mutually exclusive", s.Line, s.Col)
+	}
+	if s.Mapping != nil {
+		if sym := c.lookup(*s.Mapping, s.Line, s.Col); sym != nil && sym.Type != TypeGroup {
+			c.err("mapping target '%s' is not a group item", s.Line, s.Col, *s.Mapping)
+		}
+	}
+	if s.Giving != nil {
+		c.lookup(*s.Giving, s.Line, s.Col)
+	}
+	if s.Status != "" {
+		if sym := c.lookup(s.Status, s.Line, s.Col); sym != nil && sym.Type != TypeNumericComp {
+			c.err("status field '%s' must be PIC 9(n) COMP", s.Line, s.Col, s.Status)
+		}
+	}
+	if s.Headers != nil {
+		c.checkHeaders(s.Headers, s.Line, s.Col)
+	}
+	c.checkExceptionBlocks(s.OnException, s.NotOnException)
+}
+
+func (c *Checker) checkHttpDelete(s *parser.HttpDelete) {
+	c.checkExpr(s.URL)
+	if s.Mapping != nil {
+		if sym := c.lookup(*s.Mapping, s.Line, s.Col); sym != nil && sym.Type != TypeGroup {
+			c.err("mapping target '%s' is not a group item", s.Line, s.Col, *s.Mapping)
+		}
+	}
+	if s.Giving != nil {
+		c.lookup(*s.Giving, s.Line, s.Col)
+	}
+	if s.Status != "" {
+		if sym := c.lookup(s.Status, s.Line, s.Col); sym != nil && sym.Type != TypeNumericComp {
+			c.err("status field '%s' must be PIC 9(n) COMP", s.Line, s.Col, s.Status)
+		}
+	}
+	if s.Headers != nil {
+		c.checkHeaders(s.Headers, s.Line, s.Col)
+	}
+	c.checkExceptionBlocks(s.OnException, s.NotOnException)
+}
+
+func (c *Checker) checkHeaders(h *parser.HeadersPhrase, line, col int) {
+	if h.Count != "" {
+		c.lookup(h.Count, line, col)
+	}
+	if h.Group != "" {
+		c.lookup(h.Group, line, col)
+	}
+}
+
+func (c *Checker) checkExceptionBlocks(onException, notOnException []parser.Statement) {
+	for _, stmt := range onException {
+		c.checkStatement(stmt)
+	}
+	for _, stmt := range notOnException {
+		c.checkStatement(stmt)
+	}
+}
+
+// --- Expression checking ---
+
+func (c *Checker) checkExpr(expr parser.Expression) {
+	switch e := expr.(type) {
+	case *parser.IdentifierExpr:
+		c.lookup(e.Name, e.Line, e.Column)
+	case *parser.BinaryExpr:
+		c.checkExpr(e.Left)
+		c.checkExpr(e.Right)
+	case *parser.IntegerLiteralExpr, *parser.StringLiteralExpr:
+		// literals are always valid
+	}
+}
+
+// --- Helpers ---
+
+func (c *Checker) lookup(name string, line, col int) *Symbol {
+	if sym, ok := c.symbols[name]; ok {
+		return sym
+	}
+	c.err("undefined identifier '%s'", line, col, name)
+	return nil
+}
+
+type errPos struct {
+	line int
+	col  int
+}
+
+func (c *Checker) exprType(expr parser.Expression) (*Symbol, error) {
+	switch e := expr.(type) {
+	case *parser.StringLiteralExpr:
+		return &Symbol{Type: TypeAlphanumeric, Size: len(e.Value)}, nil
+	case *parser.IntegerLiteralExpr:
+		return &Symbol{Type: TypeNumeric}, nil
+	case *parser.IdentifierExpr:
+		sym := c.lookup(e.Name, e.Line, e.Column)
+		if sym == nil {
+			return nil, fmt.Errorf("undefined")
+		}
+		return sym, nil
+	case *parser.BinaryExpr:
+		// arithmetic expressions produce numeric
+		_, errL := c.exprType(e.Left)
+		_, errR := c.exprType(e.Right)
+		if errL != nil || errR != nil {
+			return nil, fmt.Errorf("type error in expression")
+		}
+		return &Symbol{Type: TypeNumeric}, nil
+	}
+	return nil, fmt.Errorf("unknown expression type")
+}
+
+func (c *Checker) err(format string, line, col int, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	c.errs = append(c.errs, fmt.Errorf("line %d:%d: %s", line, col, msg))
+}
+
+func typeName(s *Symbol) string {
+	switch s.Type {
+	case TypeAlphanumeric:
+		return "alphanumeric"
+	case TypeNumeric:
+		return "numeric"
+	case TypeNumericComp:
+		return "numeric-comp"
+	case TypeGroup:
+		return "group"
+	}
+	return "unknown"
+}
