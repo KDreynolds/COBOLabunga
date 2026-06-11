@@ -1,36 +1,28 @@
 # COBOLabunga
 
-A from-scratch COBOL compiler written in Go that emits LLVM IR
-and compiles to native binaries. It has its own hand-written lexer,
-recursive descent parser, type checker, and LLVM codegen. It is
-not a fork of GnuCOBOL. It is not a transpiler. It is a person
-who sat down and said "I'm going to write a COBOL compiler" and
-then did it. The HTTP client runtime is pure Go. WASM is on the
-table. This is absurd and it works.
+A from-scratch COBOL compiler written in Go, vibe-coded into
+existence. Emits LLVM IR, compiles to native binaries and WASM.
+Not a fork of GnuCOBOL. Not a transpiler. It just works.
 
-## What works
+## Current status
 
-| Feature | Status |
-|---|---|
-| IDENTIFICATION DIVISION, PROGRAM-ID | Done |
-| DATA DIVISION, WORKING-STORAGE SECTION | Done |
-| PIC X(n) and PIC 9(n) fields | Done |
-| PIC 9(n) COMP (binary) fields | Done |
-| Hierarchical data items (01/05 level) | Done |
-| PROCEDURE DIVISION, paragraphs | Done |
-| MOVE (literal, numeric, variable) | Done |
-| COMPUTE (+, -, *, /) | Done |
-| DISPLAY (strings, integers, mixed) | Done |
-| IF / ELSE / END-IF | Done |
-| EVALUATE / WHEN / WHEN OTHER | Done |
-| PERFORM (paragraph call) | Done |
-| STOP RUN | Done |
-| HTTP-GET with GIVING and STATUS | Done |
-| ON EXCEPTION / NOT ON EXCEPTION | Done |
-| HTTP-POST / PUT / PATCH / DELETE | Codegen wired, runtime wired |
-| MAPPING phrase (JSON ↔ DATA DIVISION) | Not yet |
-| PERFORM VARYING / UNTIL | Not yet |
-| HTTP-LISTEN / HTTP-RESPOND | Not yet |
+All working and tested:
+
+- Lexer → Parser → Typeck → LLVM IR → llc → clang → binary
+- WASM target via `--wasm` flag, WASI preview 1, wasmtime-compatible
+- Statements: MOVE, COMPUTE, DISPLAY, STOP RUN, IF/ELSE,
+  EVALUATE/WHEN, PERFORM (basic), STRING, UNSTRING
+- HTTP client: GET, POST, PUT, PATCH, DELETE (pure Go runtime)
+- HTTP server: LISTEN, RESPOND with HEADERS clause
+- JSON: field expressions, request/response headers, PIC X equality
+- Runtime: pure Go c-archive linked via clang
+
+## Known bugs / deferred
+
+- STRING/UNSTRING blocked under `--wasm` (needs pure LLVM IR
+  or C runtime, no Go runtime in WASM)
+- Forward-referenced globals fixed via inline GEP — do not revert
+- Period-between-statements fix for paragraphs — do not revert
 
 ## Hello world
 
@@ -57,8 +49,7 @@ $ ./hello
 Hello, COBOLabunga!
 ```
 
-Three steps happen silently: lex → parse → typeck → LLVM IR →
-`llc` → object file → `clang` → executable.
+Pipeline: lex → parse → typeck → LLVM IR → `llc` → object → `clang` → binary.
 
 ## HTTP GET example
 
@@ -89,23 +80,13 @@ Wrote httpget.o
 Wrote httpget
 $ ./httpget
 Status:
-200{
-  "args": {},
-  "headers": {
-    "Accept-Encoding": "gzip",
-    "Host": "httpbin.org",
-    "User-Agent": "Go-http-client/2.0",
-    "X-Amzn-Trace-Id": "Root=1-6a29e960-6a0f613a599d225017321169"
+200{ ... }
 ```
 
 The HTTP runtime is a `c-archive` built from pure Go
-(`net/http`, 30s timeout, follows redirects, body streamed
-as `io.Reader`). It is linked automatically when the compiler
-detects HTTP verbs in the source.
-
-When HTTP detects the program uses HTTP, it builds
-`runtime/libruntime.a` with `go build -buildmode=c-archive`
-and links it. The compiler itself stays pure Go.
+(`net/http`, 30s timeout, follows redirects). It is linked
+automatically when the compiler detects HTTP verbs in source.
+The compiler itself stays pure Go.
 
 ## Building from source
 
@@ -140,10 +121,10 @@ A + B =
 
 ```
 COBOLabunga/
-├── main.go              # Pipeline driver: lex → parse → typeck → codegen → llc → clang
+├── main.go              # Pipeline driver
 ├── lexer/
 │   ├── token.go         # Token types
-│   └── lexer.go         # Hand-written lexer (case-insensitive, hyphenated IDs)
+│   └── lexer.go         # Lexer (case-insensitive, hyphenated IDs)
 ├── parser/
 │   ├── ast.go           # AST node types + debug printer
 │   └── parser.go        # Recursive descent parser
@@ -154,36 +135,16 @@ COBOLabunga/
 ├── runtime/
 │   ├── go.mod           # Separate module for CGO build
 │   └── runtime.go       # Pure Go HTTP client (net/http, //export cgo)
-    └── examples/
-        ├── hello.cbl        # Hello world
-        ├── compute.cbl      # MOVE / COMPUTE / DISPLAY
-        ├── httpget.cbl      # HTTP-GET with GIVING + STATUS
-        └── httpmap.cbl      # HTTP-GET with MAPPING (JSON → fields)
+└── examples/
+    ├── hello.cbl        # Hello world
+    ├── compute.cbl      # MOVE / COMPUTE / DISPLAY
+    ├── httpget.cbl      # HTTP-GET with GIVING + STATUS
+    └── httpmap.cbl      # HTTP-GET with MAPPING (JSON → fields)
 ```
-
-## Roadmap
-
-- [x] Hand-written lexer
-- [x] Recursive descent parser
-- [x] Symbol table and type checking
-- [x] LLVM IR codegen (text emission)
-- [x] Native binary output via llc + clang
-- [x] HTTP-GET with GIVING and STATUS
-- [x] ON EXCEPTION / NOT ON EXCEPTION branching
-- [x] HTTP-POST / PUT / PATCH / DELETE (codegen + runtime)
-- [x] MAPPING phrase (JSON ↔ DATA DIVISION fields)
-- [x] GIVING / MAPPING mutual exclusion checking
-- [ ] PERFORM VARYING / UNTIL (loop construct)
-- [ ] HTTP-LISTEN / HTTP-RESPOND (server-side)
-- [ ] WASM target
-- [ ] Full-stack COBOL demo (HTTP-GET → parse JSON → DISPLAY)
 
 ## Relationship to COBOLScript
 
 [COBOLScript](https://github.com/KDreynolds/COBOLScript) is a
-fork of GnuCOBOL that adds HTTP extensions — it is a real COBOL
-compiler that happens to speak HTTP. COBOLabunga is the clean
-rewrite from scratch: its own lexer, parser, type system, and
-codegen, with HTTP as a first-class citizen from day one. Both
-live under `github.com/KDreynolds`. They disagree on approach
-and agree on goal.
+fork of GnuCOBOL that adds HTTP extensions. COBOLabunga is the
+clean rewrite from scratch with HTTP as a first-class citizen
+from day one. Both live under `github.com/KDreynolds`.

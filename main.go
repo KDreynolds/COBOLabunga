@@ -14,16 +14,21 @@ import (
 
 func main() {
 	wasmTarget := false
+	outName := ""
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--wasm" {
 			wasmTarget = true
 			args = append(args[:i], args[i+1:]...)
-			break
+			i--
+		} else if args[i] == "-o" && i+1 < len(args) {
+			outName = args[i+1]
+			args = append(args[:i], args[i+2:]...)
+			i--
 		}
 	}
 	if len(args) < 1 {
-		fmt.Println("Usage: cobolabunga [--wasm] <file.cbl>")
+		fmt.Println("Usage: cobolabunga [--wasm] [-o output] <file.cbl>")
 		os.Exit(1)
 	}
 
@@ -60,7 +65,10 @@ func main() {
 	}
 
 	base := filepath.Base(args[0])
-	name := base[:len(base)-len(filepath.Ext(base))]
+	name := outName
+	if name == "" {
+		name = base[:len(base)-len(filepath.Ext(base))]
+	}
 
 	// --- Phase 4: Codegen ---
 	cg := codegen.New(prog)
