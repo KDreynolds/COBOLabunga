@@ -99,9 +99,12 @@ func main() {
 	exeName := name
 	if wasmTarget {
 		exeName = name + ".wasm"
-		needHTTP := usesHTTP(prog)
-		if needHTTP {
+		if usesHTTP(prog) {
 			fmt.Fprintf(os.Stderr, "Error: HTTP features not supported in WASM target\n")
+			os.Exit(1)
+		}
+		if usesStringRuntime(prog) {
+			fmt.Fprintf(os.Stderr, "Error: STRING/UNSTRING not supported in WASM target yet\n")
 			os.Exit(1)
 		}
 		cmd := exec.Command("clang", "--target=wasm32-wasip1",
@@ -113,8 +116,8 @@ func main() {
 		}
 		fmt.Printf("Wrote %s\n", exeName)
 	} else {
-		needHTTP := usesHTTP(prog)
-		if needHTTP {
+		needsRuntime := usesHTTP(prog) || usesStringRuntime(prog)
+		if needsRuntime {
 			runtimeDir := "runtime"
 			runtimeLib := runtimeDir + "/libruntime.a"
 			buildCmd := exec.Command("go", "build", "-buildmode=c-archive",
@@ -215,6 +218,63 @@ func statementsUseHTTP(stmts []parser.Statement) bool {
 				}
 			}
 			if statementsUseHTTP(s.WhenOther) {
+				return true
+			}
+		case *parser.StringStmt:
+			s := stmt.(*parser.StringStmt)
+			if statementsUseHTTP(s.OnOverflow) || statementsUseHTTP(s.NotOnOverflow) {
+				return true
+			}
+		case *parser.UnstringStmt:
+			s := stmt.(*parser.UnstringStmt)
+			if statementsUseHTTP(s.OnOverflow) || statementsUseHTTP(s.NotOnOverflow) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func usesStringRuntime(prog *parser.Program) bool {
+	if prog.ProcedureDivision == nil {
+		return false
+	}
+	for _, para := range prog.ProcedureDivision.Paragraphs {
+		if statementsUseString(para.Statements) {
+			return true
+		}
+	}
+	return false
+}
+
+func statementsUseString(stmts []parser.Statement) bool {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *parser.StringStmt:
+			if statementsUseString(s.OnOverflow) || statementsUseString(s.NotOnOverflow) {
+				return true
+			}
+			return true
+		case *parser.UnstringStmt:
+			if statementsUseString(s.OnOverflow) || statementsUseString(s.NotOnOverflow) {
+				return true
+			}
+			return true
+		case *parser.Perform:
+			if statementsUseString(s.Body) {
+				return true
+			}
+		case *parser.If:
+			if statementsUseString(s.ThenBody) || statementsUseString(s.ElseBody) {
+				return true
+			}
+		case *parser.Evaluate:
+			for _, wc := range s.WhenClauses {
+				if statementsUseString(wc.Body) {
+					return true
+				}
+			}
+			if statementsUseString(s.WhenOther) {
 				return true
 			}
 		}

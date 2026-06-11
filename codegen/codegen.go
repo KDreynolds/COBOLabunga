@@ -52,6 +52,14 @@ func (c *Codegen) Generate() string {
 	c.emit("declare i32 @cob_http_respond_set_header(ptr, ptr, i64)")
 	c.emit("declare i32 @cob_http_request_field(ptr, ptr, i64)")
 	c.emit("declare i32 @cob_picx_eq(ptr, i64, ptr)")
+	c.emit("declare void @cob_string_init(ptr, i64, ptr)")
+	c.emit("declare void @cob_string_add_size(ptr, i64)")
+	c.emit("declare void @cob_string_add_until_space(ptr, i64)")
+	c.emit("declare void @cob_string_add_until_delim(ptr, i64, ptr, i64)")
+	c.emit("declare void @cob_string_finish(ptr, ptr)")
+	c.emit("declare void @cob_unstring_init(ptr, i64, ptr, ptr)")
+	c.emit("declare i32 @cob_unstring_extract(ptr, i64, ptr, i64, ptr, ptr, i64, ptr, i64)")
+	c.emit("declare void @cob_unstring_finish(ptr, ptr, ptr)")
 	c.emit("")
 
 	c.emitWorkingStorage()
@@ -218,6 +226,10 @@ func (c *Codegen) emitStatement(stmt parser.Statement) {
 		c.emitHttpListen(s)
 	case *parser.HttpRespond:
 		c.emitHttpRespond(s)
+	case *parser.StringStmt:
+		c.emitString(s)
+	case *parser.UnstringStmt:
+		c.emitUnstring(s)
 	}
 }
 
@@ -250,6 +262,212 @@ func (c *Codegen) emitDisplay(s *parser.Display) {
 			c.emit("call i32 @puts(ptr getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0))",
 				sz, cn)
 		}
+	}
+}
+
+func (c *Codegen) emitString(s *parser.StringStmt) {
+	dest := sanitize(s.Into)
+	destSize := int64(c.fieldSize(s.Into))
+
+	// Set up pointer
+	var ptrAlloca string
+	pointerArg := "ptr null"
+	if s.Pointer != "" {
+		ptrName := sanitize(s.Pointer)
+		ptrReg := c.nextRegister()
+		ptrAlloca = ptrReg + ".ptr"
+		c.emit("%%%s = load i32, ptr @%s", ptrReg, ptrName)
+		c.emit("%%%s = alloca i32", ptrAlloca)
+		c.emit("store i32 %%%s, ptr %%%s", ptrReg, ptrAlloca)
+		pointerArg = "ptr %" + ptrAlloca
+	}
+
+	c.emit("call void @cob_string_init(ptr @%s, i64 %d, %s)",
+		dest, destSize, pointerArg)
+
+	for _, f := range s.Sending {
+		srcReg := c.emitExprPtr(f.Source)
+		srcSize := c.exprValueSize(f.Source)
+
+		switch f.Delimiter.Type {
+		case parser.DelimBySize:
+			c.emit("call void @cob_string_add_size(ptr %s, i64 %d)", srcReg, srcSize)
+		case parser.DelimBySpace:
+			c.emit("call void @cob_string_add_until_space(ptr %s, i64 %d)", srcReg, srcSize)
+		case parser.DelimByIdentifier:
+			delimReg := c.emitExprPtr(f.Delimiter.Value)
+			delimSize := c.exprValueSize(f.Delimiter.Value)
+			c.emit("call void @cob_string_add_until_delim(ptr %s, i64 %d, ptr %s, i64 %d)",
+				srcReg, srcSize, delimReg, delimSize)
+		}
+	}
+
+	overflowReg := c.nextRegister()
+	overflowAlloca := overflowReg + ".ovf"
+	c.emit("%%%s = alloca i32", overflowAlloca)
+	c.emit("store i32 0, ptr %%%s", overflowAlloca)
+	c.emit("call void @cob_string_finish(%s, ptr %%%s)", pointerArg, overflowAlloca)
+
+	if s.Pointer != "" {
+		ptrName := sanitize(s.Pointer)
+		ptrVal := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", ptrVal, ptrAlloca)
+		c.emit("store i32 %%%s, ptr @%s", ptrVal, ptrName)
+	}
+
+	if len(s.OnOverflow) > 0 || len(s.NotOnOverflow) > 0 {
+		labelOverflow := c.nextLabel("string.overflow")
+		labelNoOverflow := c.nextLabel("string.nooverflow")
+		labelEnd := c.nextLabel("string.end")
+
+		ovVal := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", ovVal, overflowAlloca)
+		c.emit("%%ovf = icmp ne i32 %%%s, 0", ovVal)
+		c.emit("br i1 %%ovf, label %%%s, label %%%s", labelOverflow, labelNoOverflow)
+
+		c.emit("%s:", labelOverflow)
+		c.indent++
+		c.emitStatements(s.OnOverflow)
+		c.emit("br label %%%s", labelEnd)
+		c.indent--
+
+		c.emit("%s:", labelNoOverflow)
+		c.indent++
+		c.emitStatements(s.NotOnOverflow)
+		c.emit("br label %%%s", labelEnd)
+		c.indent--
+
+		c.emit("%s:", labelEnd)
+	}
+}
+
+func (c *Codegen) emitUnstring(s *parser.UnstringStmt) {
+	srcReg := c.emitExprPtr(s.Source)
+	srcSize := c.exprValueSize(s.Source)
+
+	var ptrAlloca string
+	pointerArg := "ptr null"
+	if s.Pointer != "" {
+		ptrName := sanitize(s.Pointer)
+		ptrReg := c.nextRegister()
+		ptrAlloca = ptrReg + ".ptr"
+		c.emit("%%%s = load i32, ptr @%s", ptrReg, ptrName)
+		c.emit("%%%s = alloca i32", ptrAlloca)
+		c.emit("store i32 %%%s, ptr %%%s", ptrReg, ptrAlloca)
+		pointerArg = "ptr %" + ptrAlloca
+	}
+
+	var talAlloca string
+	tallyArg := "ptr null"
+	if s.Tallying != "" {
+		talReg := c.nextRegister()
+		talAlloca = talReg + ".tal"
+		c.emit("%%%s = alloca i32", talAlloca)
+		c.emit("store i32 0, ptr %%%s", talAlloca)
+		tallyArg = "ptr %" + talAlloca
+	}
+
+	c.emit("call void @cob_unstring_init(ptr %s, i64 %d, %s, %s)",
+		srcReg, srcSize, pointerArg, tallyArg)
+
+	for _, f := range s.Into {
+		destName := sanitize(f.Destination)
+		destSize := int64(c.fieldSize(f.Destination))
+
+		delimInArg := "ptr null"
+		delimInSize := int64(0)
+		if f.DelimiterIn != "" {
+			delimInSize = int64(c.fieldSize(f.DelimiterIn))
+			delimInArg = "ptr @" + sanitize(f.DelimiterIn)
+		}
+		countInArg := "ptr null"
+		if f.CountIn != "" {
+			cntReg := c.nextRegister()
+			cAlloca := cntReg + ".cnt"
+			c.emit("%%%s = alloca i32", cAlloca)
+			countInArg = "ptr %" + cAlloca
+		}
+
+		delim1Expr := "ptr null"
+		delim1Size := int64(0)
+		delim2Expr := "ptr null"
+		delim2Size := int64(0)
+		if len(s.Delimiters) > 0 {
+			switch s.Delimiters[0].Type {
+			case parser.DelimByIdentifier:
+				r := c.emitExprPtr(s.Delimiters[0].Value)
+				delim1Expr = "ptr %" + r
+				delim1Size = c.exprValueSize(s.Delimiters[0].Value)
+			case parser.DelimBySpace:
+				cn := c.addStringConst([]byte(" "))
+				delim1Expr = "ptr getelementptr inbounds ([2 x i8], ptr @" + cn + ", i64 0, i64 0)"
+				delim1Size = 1
+			}
+			if len(s.Delimiters) > 1 {
+				switch s.Delimiters[1].Type {
+				case parser.DelimByIdentifier:
+					r := c.emitExprPtr(s.Delimiters[1].Value)
+					delim2Expr = "ptr %" + r
+					delim2Size = c.exprValueSize(s.Delimiters[1].Value)
+				case parser.DelimBySpace:
+					cn := c.addStringConst([]byte(" "))
+					delim2Expr = "ptr getelementptr inbounds ([2 x i8], ptr @" + cn + ", i64 0, i64 0)"
+					delim2Size = 1
+				}
+			}
+		}
+
+		c.emit("call i32 @cob_unstring_extract(ptr @%s, i64 %d, %s, i64 %d, %s, %s, i64 %d, %s, i64 %d)",
+			destName, destSize,
+			delimInArg, delimInSize, countInArg,
+			delim1Expr, delim1Size,
+			delim2Expr, delim2Size)
+	}
+
+	overflowReg := c.nextRegister()
+	overflowAlloca := overflowReg + ".ovf"
+	c.emit("%%%s = alloca i32", overflowAlloca)
+	c.emit("store i32 0, ptr %%%s", overflowAlloca)
+	c.emit("call void @cob_unstring_finish(%s, %s, ptr %%%s)",
+		pointerArg, tallyArg, overflowAlloca)
+
+	if s.Pointer != "" {
+		ptrName := sanitize(s.Pointer)
+		ptrVal := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", ptrVal, ptrAlloca)
+		c.emit("store i32 %%%s, ptr @%s", ptrVal, ptrName)
+	}
+
+	if s.Tallying != "" {
+		talName := sanitize(s.Tallying)
+		talVal := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", talVal, talAlloca)
+		c.emit("store i32 %%%s, ptr @%s", talVal, talName)
+	}
+
+	if len(s.OnOverflow) > 0 || len(s.NotOnOverflow) > 0 {
+		labelOverflow := c.nextLabel("unstring.overflow")
+		labelNoOverflow := c.nextLabel("unstring.nooverflow")
+		labelEnd := c.nextLabel("unstring.end")
+
+		ovVal := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", ovVal, overflowAlloca)
+		c.emit("%%ovf = icmp ne i32 %%%s, 0", ovVal)
+		c.emit("br i1 %%ovf, label %%%s, label %%%s", labelOverflow, labelNoOverflow)
+
+		c.emit("%s:", labelOverflow)
+		c.indent++
+		c.emitStatements(s.OnOverflow)
+		c.emit("br label %%%s", labelEnd)
+		c.indent--
+
+		c.emit("%s:", labelNoOverflow)
+		c.indent++
+		c.emitStatements(s.NotOnOverflow)
+		c.emit("br label %%%s", labelEnd)
+		c.indent--
+
+		c.emit("%s:", labelEnd)
 	}
 }
 
@@ -471,18 +689,13 @@ func (c *Codegen) emitExprPtr(expr parser.Expression) string {
 		return "%" + reg
 	case *parser.StringLiteralExpr:
 		cn := c.addStringConst([]byte(e.Value))
-		reg := c.nextRegister()
 		sz := len(e.Value) + 1
-		c.emit("%%%s = getelementptr inbounds [%d x i8], ptr @%s, i64 0, i64 0",
-			reg, sz, cn)
-		return "%" + reg
+		return fmt.Sprintf("getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0)", sz, cn)
 	case *parser.IntegerLiteralExpr:
-		cn := c.addStringConst([]byte(fmt.Sprintf("%d", e.Value)))
-		reg := c.nextRegister()
-		sz := len(fmt.Sprintf("%d", e.Value)) + 1
-		c.emit("%%%s = getelementptr inbounds [%d x i8], ptr @%s, i64 0, i64 0",
-			reg, sz, cn)
-		return "%" + reg
+		s := fmt.Sprintf("%d", e.Value)
+		cn := c.addStringConst([]byte(s))
+		sz := len(s) + 1
+		return fmt.Sprintf("getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0)", sz, cn)
 	}
 	return "null"
 }
@@ -790,6 +1003,8 @@ func (c *Codegen) nextLabel(prefix string) string {
 
 func sanitize(name string) string {
 	s := strings.ReplaceAll(name, "-", "_")
+	s = strings.ReplaceAll(s, "<", "_")
+	s = strings.ReplaceAll(s, ">", "_")
 	return "cob." + s
 }
 
@@ -815,6 +1030,30 @@ func (c *Codegen) exprSize(expr parser.Expression) int64 {
 		return int64(len(e.Value))
 	case *parser.IntegerLiteralExpr:
 		return 4
+	}
+	return 1
+}
+
+func (c *Codegen) exprName(expr parser.Expression) string {
+	switch e := expr.(type) {
+	case *parser.IdentifierExpr:
+		return e.Name
+	case *parser.StringLiteralExpr:
+		return ""
+	case *parser.IntegerLiteralExpr:
+		return ""
+	}
+	return ""
+}
+
+func (c *Codegen) exprValueSize(expr parser.Expression) int64 {
+	switch e := expr.(type) {
+	case *parser.IdentifierExpr:
+		return int64(c.fieldSize(e.Name))
+	case *parser.StringLiteralExpr:
+		return int64(len(e.Value))
+	case *parser.IntegerLiteralExpr:
+		return 4 // max int32 digits (no null terminator needed)
 	}
 	return 1
 }

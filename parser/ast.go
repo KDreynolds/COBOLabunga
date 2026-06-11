@@ -210,6 +210,56 @@ type HttpRespond struct {
 	Col            int
 }
 
+// --- String Delimiter Types ---
+
+type StringDelimType int
+
+const (
+	DelimBySize StringDelimType = iota
+	DelimBySpace
+	DelimByIdentifier
+)
+
+type StringDelim struct {
+	Type  StringDelimType
+	Value Expression // for DelimByIdentifier
+}
+
+type StringSendingField struct {
+	Source    Expression
+	Delimiter StringDelim
+}
+
+type StringStmt struct {
+	Sending       []StringSendingField
+	Into          string
+	Pointer       string
+	OnOverflow    []Statement
+	NotOnOverflow []Statement
+	Line          int
+	Col           int
+}
+
+// --- UNSTRING Types ---
+
+type UnstringReceivingField struct {
+	Destination string
+	DelimiterIn string
+	CountIn     string
+}
+
+type UnstringStmt struct {
+	Source        Expression
+	Delimiters    []StringDelim // OR'd list
+	Into          []UnstringReceivingField
+	Pointer       string
+	Tallying      string
+	OnOverflow    []Statement
+	NotOnOverflow []Statement
+	Line          int
+	Col           int
+}
+
 func (*Move) stmtTag()        {}
 func (*Compute) stmtTag()     {}
 func (*Display) stmtTag()     {}
@@ -217,6 +267,8 @@ func (*Perform) stmtTag()     {}
 func (*If) stmtTag()          {}
 func (*Evaluate) stmtTag()    {}
 func (*StopRun) stmtTag()     {}
+func (*StringStmt) stmtTag()  {}
+func (*UnstringStmt) stmtTag() {}
 func (*HttpGet) stmtTag()     {}
 func (*HttpPost) stmtTag()    {}
 func (*HttpPut) stmtTag()     {}
@@ -435,6 +487,61 @@ func printStatement(stmt Statement, indent int) {
 			fmt.Printf(" CONTENT-TYPE %s", exprStr(s.ContentType))
 		}
 		fmt.Println()
+	case *StringStmt:
+		fmt.Printf("%sSTRING\n", prefix)
+		for _, f := range s.Sending {
+			delim := ""
+			switch f.Delimiter.Type {
+			case DelimBySize:
+				delim = "SIZE"
+			case DelimBySpace:
+				delim = "SPACE"
+			case DelimByIdentifier:
+				delim = exprStr(f.Delimiter.Value)
+			}
+			fmt.Printf("%s  %s DELIMITED BY %s\n", prefix, exprStr(f.Source), delim)
+		}
+		fmt.Printf("%s  INTO %s\n", prefix, s.Into)
+		if s.Pointer != "" {
+			fmt.Printf("%s  POINTER %s\n", prefix, s.Pointer)
+		}
+		fmt.Printf("%sEND-STRING\n", prefix)
+	case *UnstringStmt:
+		fmt.Printf("%sUNSTRING %s", prefix, exprStr(s.Source))
+		if len(s.Delimiters) > 0 {
+			fmt.Printf(" DELIMITED BY ")
+			for i, d := range s.Delimiters {
+				if i > 0 {
+					fmt.Printf(" OR ")
+				}
+				switch d.Type {
+				case DelimBySize:
+					fmt.Printf("SIZE")
+				case DelimBySpace:
+					fmt.Printf("SPACE")
+				case DelimByIdentifier:
+					fmt.Printf("%s", exprStr(d.Value))
+				}
+			}
+		}
+		fmt.Println()
+		for _, f := range s.Into {
+			fmt.Printf("%s  INTO %s", prefix, f.Destination)
+			if f.DelimiterIn != "" {
+				fmt.Printf(" DELIMITER IN %s", f.DelimiterIn)
+			}
+			if f.CountIn != "" {
+				fmt.Printf(" COUNT IN %s", f.CountIn)
+			}
+			fmt.Println()
+		}
+		if s.Pointer != "" {
+			fmt.Printf("%s  POINTER %s\n", prefix, s.Pointer)
+		}
+		if s.Tallying != "" {
+			fmt.Printf("%s  TALLYING IN %s\n", prefix, s.Tallying)
+		}
+		fmt.Printf("%sEND-UNSTRING\n", prefix)
 	}
 }
 

@@ -92,6 +92,14 @@ extern int cob_http_respond_set_header(char* name, char* val, long int valSize);
 extern int cob_http_respond(int status, char* body, char* contentType);
 extern int cob_http_request_field(char* fieldName, char* out, long int outSize);
 extern int cob_picx_eq(char* a, long int aSize, char* b);
+extern void cob_string_init(void* dest, long int destSize, long int* pointer);
+extern void cob_string_add_size(void* src, long int srcSize);
+extern void cob_string_add_until_space(void* src, long int srcSize);
+extern void cob_string_add_until_delim(void* src, long int srcSize, void* delim, long int delimSize);
+extern void cob_string_finish(long int* pointer, int* overflow);
+extern void cob_unstring_init(void* src, long int srcSize, long int* pointer, long int* tally);
+extern int cob_unstring_extract(void* dest, long int destSize, char* delimIn, long int delimInSize, long int* countIn, void* delim1, long int delim1Size, void* delim2, long int delim2Size);
+extern void cob_unstring_finish(long int* pointer, long int* tally, int* overflow);
 
 #ifdef __cplusplus
 }

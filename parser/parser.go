@@ -372,9 +372,17 @@ func (p *Parser) parseStatements() []Statement {
 		}
 		// Consume trailing period if present
 		if p.match(lexer.PERIOD) {
-			// In COBOL, a period can terminate multiple statements.
-			// We stop here since the period might also start a new paragraph.
-			break
+			// In COBOL, a period can terminate one or more statements.
+			// If the next token is a new paragraph (IDENTIFIER followed by PERIOD), stop.
+			// Otherwise, if it's another statement, continue in the same paragraph.
+			if !p.atEnd() && p.peek().Type == lexer.IDENTIFIER &&
+				p.pos+1 < len(p.tokens) && p.tokens[p.pos+1].Type == lexer.PERIOD {
+				break
+			}
+			if p.atEnd() || p.peek().Type == lexer.EOF {
+				break
+			}
+			// Continue parsing statements in the same paragraph
 		}
 	}
 	return stmts
@@ -394,7 +402,8 @@ func (p *Parser) isStatementEnd() bool {
 func (p *Parser) isScopeTerminator() bool {
 	switch p.peek().Type {
 	case lexer.ELSE, lexer.END_IF, lexer.WHEN, lexer.END_EVALUATE,
-		lexer.END_HTTP, lexer.END_PERFORM:
+		lexer.END_HTTP, lexer.END_PERFORM,
+		lexer.END_STRING, lexer.END_UNSTRING:
 		return true
 	}
 	return false
@@ -404,6 +413,7 @@ func (p *Parser) isStatementStart() bool {
 	switch p.peek().Type {
 	case lexer.MOVE, lexer.COMPUTE, lexer.DISPLAY, lexer.PERFORM,
 		lexer.IF, lexer.EVALUATE, lexer.STOP,
+		lexer.STRING, lexer.UNSTRING,
 		lexer.HTTP_GET, lexer.HTTP_POST, lexer.HTTP_PUT,
 		lexer.HTTP_PATCH, lexer.HTTP_DELETE,
 		lexer.HTTP_LISTEN, lexer.HTTP_RESPOND:
@@ -432,6 +442,10 @@ func (p *Parser) parseStatement() Statement {
 		return p.parseEvaluateStatement()
 	case lexer.STOP:
 		return p.parseStopRunStatement()
+	case lexer.STRING:
+		return p.parseStringStatement()
+	case lexer.UNSTRING:
+		return p.parseUnstringStatement()
 	case lexer.HTTP_GET:
 		return p.parseHttpGetStatement()
 	case lexer.HTTP_POST:
@@ -694,6 +708,214 @@ func (p *Parser) parseStopRunStatement() *StopRun {
 		p.error("expected RUN after STOP")
 	}
 	return &StopRun{Line: tok.Line, Col: tok.Column}
+}
+
+func (p *Parser) parseStringStatement() *StringStmt {
+	tok := p.advance() // consume STRING
+	stmt := &StringStmt{Line: tok.Line, Col: tok.Column}
+
+	// Parse sending fields: expr DELIMITED BY (SIZE / SPACE / expr) ...
+	for {
+		if p.atEnd() || p.isScopeTerminator() {
+			break
+		}
+		source := p.parseExpression()
+		if source == nil {
+			break
+		}
+		if !p.match(lexer.DELIMITED) {
+			p.error("expected DELIMITED BY in STRING")
+			break
+		}
+		if !p.match(lexer.BY) {
+			p.error("expected BY after DELIMITED in STRING")
+			break
+		}
+		delim := StringDelim{}
+		if p.match(lexer.SIZE) {
+			delim.Type = DelimBySize
+		} else if p.match(lexer.SPACE) {
+			delim.Type = DelimBySpace
+		} else {
+			delim.Type = DelimByIdentifier
+			delim.Value = p.parseExpression()
+			if delim.Value == nil {
+				p.error("expected delimiter in STRING")
+				break
+			}
+		}
+		stmt.Sending = append(stmt.Sending, StringSendingField{
+			Source:    source,
+			Delimiter: delim,
+		})
+		if p.atEnd() || p.isScopeTerminator() {
+			break
+		}
+		// Allow chaining without separator
+		if p.peek().Type == lexer.INTO {
+			break
+		}
+	}
+
+	// INTO destination
+	if !p.match(lexer.INTO) {
+		p.error("expected INTO in STRING")
+	}
+	if p.peek().Type == lexer.IDENTIFIER {
+		stmt.Into = p.advance().Literal
+	} else {
+		p.error("expected identifier after INTO")
+	}
+
+	// Optional WITH POINTER
+	if p.match(lexer.POINTER) {
+		if p.peek().Type == lexer.IDENTIFIER {
+			stmt.Pointer = p.advance().Literal
+		} else {
+			p.error("expected identifier after POINTER")
+		}
+	}
+
+	// Optional ON OVERFLOW / NOT ON OVERFLOW
+	if p.match(lexer.ON) {
+		if p.match(lexer.OVERFLOW) {
+			stmt.OnOverflow = p.parseStatementsUntil(lexer.END_STRING, lexer.PERIOD)
+		}
+	}
+	if p.match(lexer.NOT) {
+		if p.match(lexer.ON) {
+			if p.match(lexer.OVERFLOW) {
+				stmt.NotOnOverflow = p.parseStatementsUntil(lexer.END_STRING, lexer.PERIOD)
+			}
+		}
+	}
+
+	// Expect END-STRING
+	if !p.match(lexer.END_STRING) {
+		p.error("expected END-STRING")
+	}
+
+	return stmt
+}
+
+func (p *Parser) parseUnstringStatement() *UnstringStmt {
+	tok := p.advance() // consume UNSTRING
+	stmt := &UnstringStmt{Line: tok.Line, Col: tok.Column}
+
+	// Source expression
+	stmt.Source = p.parseExpression()
+	if stmt.Source == nil {
+		p.error("expected source in UNSTRING")
+	}
+
+	// Optional DELIMITED BY [ALL] delimiter [OR [ALL] delimiter ...]
+	if p.match(lexer.DELIMITED) {
+		if !p.match(lexer.BY) {
+			p.error("expected BY after DELIMITED in UNSTRING")
+		}
+		for {
+			delim := StringDelim{}
+			if p.match(lexer.SPACE) {
+				delim.Type = DelimBySpace
+			} else if p.match(lexer.SIZE) {
+				p.error("SIZE not valid as UNSTRING delimiter")
+				break
+			} else {
+				delim.Type = DelimByIdentifier
+				delim.Value = p.parseExpression()
+				if delim.Value == nil {
+					p.error("expected delimiter in UNSTRING")
+					break
+				}
+			}
+			stmt.Delimiters = append(stmt.Delimiters, delim)
+			if !p.match(lexer.OR) {
+				break
+			}
+		}
+	}
+
+	// INTO dest1 [DELIMITER IN delim1] [COUNT IN cnt1] ...
+	if !p.match(lexer.INTO) {
+		p.error("expected INTO in UNSTRING")
+	}
+	for {
+		if p.atEnd() || p.isScopeTerminator() {
+			break
+		}
+		if p.peek().Type != lexer.IDENTIFIER {
+			break
+		}
+		field := UnstringReceivingField{
+			Destination: p.advance().Literal,
+		}
+		if p.match(lexer.DELIMITER) {
+			if p.match(lexer.IN) {
+				if p.peek().Type == lexer.IDENTIFIER {
+					field.DelimiterIn = p.advance().Literal
+				} else {
+					p.error("expected identifier after DELIMITER IN")
+				}
+			} else {
+				p.error("expected IN after DELIMITER")
+			}
+		}
+		if p.match(lexer.COUNT) {
+			if p.match(lexer.IN) {
+				if p.peek().Type == lexer.IDENTIFIER {
+					field.CountIn = p.advance().Literal
+				} else {
+					p.error("expected identifier after COUNT IN")
+				}
+			} else {
+				p.error("expected IN after COUNT")
+			}
+		}
+		stmt.Into = append(stmt.Into, field)
+	}
+
+	// Optional WITH POINTER
+	if p.match(lexer.POINTER) {
+		if p.peek().Type == lexer.IDENTIFIER {
+			stmt.Pointer = p.advance().Literal
+		} else {
+			p.error("expected identifier after POINTER")
+		}
+	}
+
+	// Optional TALLYING IN
+	if p.match(lexer.TALLYING) {
+		if p.match(lexer.IN) {
+			if p.peek().Type == lexer.IDENTIFIER {
+				stmt.Tallying = p.advance().Literal
+			} else {
+				p.error("expected identifier after TALLYING IN")
+			}
+		} else {
+			p.error("expected IN after TALLYING")
+		}
+	}
+
+	// Optional ON OVERFLOW / NOT ON OVERFLOW
+	if p.match(lexer.ON) {
+		if p.match(lexer.OVERFLOW) {
+			stmt.OnOverflow = p.parseStatementsUntil(lexer.END_UNSTRING, lexer.PERIOD)
+		}
+	}
+	if p.match(lexer.NOT) {
+		if p.match(lexer.ON) {
+			if p.match(lexer.OVERFLOW) {
+				stmt.NotOnOverflow = p.parseStatementsUntil(lexer.END_UNSTRING, lexer.PERIOD)
+			}
+		}
+	}
+
+	// Expect END-UNSTRING
+	if !p.match(lexer.END_UNSTRING) {
+		p.error("expected END-UNSTRING")
+	}
+
+	return stmt
 }
 
 // --- HTTP verb parsers ---

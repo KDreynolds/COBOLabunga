@@ -65,6 +65,25 @@ const (
 	NOT
 	END_HTTP
 
+	// STRING/UNSTRING keywords
+	STRING
+	UNSTRING
+	DELIMITED
+	DELIMITER
+	INTO
+	OVERFLOW
+	END_STRING
+	END_UNSTRING
+	SPACE
+	SIZE
+	POINTER
+	OR
+	CHARACTERS
+	COUNT
+	IN
+	ALL
+	TALLYING
+
 	// Literals
 	STRING_LITERAL
 	INTEGER_LITERAL
@@ -140,6 +159,23 @@ var tokenNames = map[TokenType]string{
 	FROM:            "FROM",
 	BY:              "BY",
 	END_PERFORM:     "END-PERFORM",
+	STRING:          "STRING",
+	UNSTRING:        "UNSTRING",
+	DELIMITED:       "DELIMITED",
+	DELIMITER:       "DELIMITER",
+	INTO:            "INTO",
+	OVERFLOW:        "OVERFLOW",
+	END_STRING:      "END-STRING",
+	END_UNSTRING:    "END-UNSTRING",
+	SPACE:           "SPACE",
+	SIZE:            "SIZE",
+	POINTER:         "POINTER",
+	OR:              "OR",
+	CHARACTERS:      "CHARACTERS",
+	COUNT:           "COUNT",
+	IN:              "IN",
+	ALL:             "ALL",
+	TALLYING:        "TALLYING",
 	PERIOD:          ".",
 	LPAREN:          "(",
 	RPAREN:          ")",

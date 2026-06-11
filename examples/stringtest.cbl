@@ -1,0 +1,15 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. stringtest.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-HELLO     PIC X(10) VALUE "HELLO".
+       01 WS-WORLD     PIC X(10) VALUE "WORLD".
+       01 WS-RESULT    PIC X(30).
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           STRING WS-HELLO DELIMITED BY SIZE
+                  WS-WORLD DELIMITED BY SIZE
+             INTO WS-RESULT
+           END-STRING
+           DISPLAY WS-RESULT
+           STOP RUN.

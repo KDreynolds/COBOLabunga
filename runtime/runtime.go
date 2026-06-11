@@ -377,6 +377,274 @@ func cob_picx_eq(a *C.char, aSize C.long, b *C.char) C.int {
 	return 0
 }
 
+// --- STRING runtime ---
+
+var sState struct {
+	dest     unsafe.Pointer
+	destSize int64
+	pos      int64
+	overflow bool
+}
+
+//export cob_string_init
+func cob_string_init(dest unsafe.Pointer, destSize C.long, pointer *C.long) {
+	sState.dest = dest
+	sState.destSize = int64(destSize)
+	sState.pos = 1
+	sState.overflow = false
+	if pointer != nil {
+		sState.pos = int64(*pointer)
+	}
+}
+
+//export cob_string_add_size
+func cob_string_add_size(src unsafe.Pointer, srcSize C.long) {
+	if sState.overflow {
+		sState.pos += int64(srcSize)
+		return
+	}
+	n := int64(srcSize)
+	dp := sState.pos - 1
+	for i := int64(0); i < n; i++ {
+		if dp >= sState.destSize {
+			sState.overflow = true
+			dp++
+			break
+		}
+		b := *(*byte)(unsafe.Pointer(uintptr(src) + uintptr(i)))
+		*(*byte)(unsafe.Pointer(uintptr(sState.dest) + uintptr(dp))) = b
+		dp++
+	}
+	sState.pos = dp + 1
+}
+
+//export cob_string_add_until_space
+func cob_string_add_until_space(src unsafe.Pointer, srcSize C.long) {
+	if sState.overflow {
+		sState.pos += int64(srcSize)
+		return
+	}
+	n := int64(srcSize)
+	dp := sState.pos - 1
+	var i int64
+	for i = 0; i < n; i++ {
+		b := *(*byte)(unsafe.Pointer(uintptr(src) + uintptr(i)))
+		if b == ' ' {
+			i++ // skip the space
+			break
+		}
+		if dp >= sState.destSize {
+			sState.overflow = true
+			i++
+			break
+		}
+		*(*byte)(unsafe.Pointer(uintptr(sState.dest) + uintptr(dp))) = b
+		dp++
+	}
+	sState.pos = dp + 1
+}
+
+//export cob_string_add_until_delim
+func cob_string_add_until_delim(src unsafe.Pointer, srcSize C.long, delim unsafe.Pointer, delimSize C.long) {
+	if sState.overflow {
+		sState.pos += int64(srcSize)
+		return
+	}
+	delimBytes := C.GoBytes(delim, C.int(delimSize))
+	delimStr := string(delimBytes)
+	n := int64(srcSize)
+	dp := sState.pos - 1
+	var i int64
+	for i = 0; i < n; i++ {
+		b := *(*byte)(unsafe.Pointer(uintptr(src) + uintptr(i)))
+		// Check if current position matches delimiter start
+		if byte(delimStr[0]) == b {
+			// check remaining delimiter bytes
+			match := true
+			var j int64
+			for j = 1; j < int64(len(delimStr)); j++ {
+				if i+j >= n {
+					break
+				}
+				cb := *(*byte)(unsafe.Pointer(uintptr(src) + uintptr(i+j)))
+				if cb != delimStr[j] {
+					match = false
+					break
+				}
+			}
+			if match && j == int64(len(delimStr)) {
+				i += int64(len(delimStr))
+				break
+			}
+		}
+		if dp >= sState.destSize {
+			sState.overflow = true
+			i++
+			break
+		}
+		*(*byte)(unsafe.Pointer(uintptr(sState.dest) + uintptr(dp))) = b
+		dp++
+	}
+	sState.pos = dp + 1
+}
+
+//export cob_string_finish
+func cob_string_finish(pointer *C.long, overflow *C.int) {
+	if pointer != nil {
+		*pointer = C.long(sState.pos)
+	}
+	if sState.overflow {
+		*overflow = 1
+	}
+	sState.dest = nil
+}
+
+// --- UNSTRING runtime ---
+
+var uState struct {
+	src        unsafe.Pointer
+	srcSize    int64
+	pos        int64
+	fieldIndex int
+	tally      int64
+	overflow   bool
+}
+
+//export cob_unstring_init
+func cob_unstring_init(src unsafe.Pointer, srcSize C.long, pointer *C.long, tally *C.long) {
+	uState.src = src
+	uState.srcSize = int64(srcSize)
+	uState.pos = 1
+	uState.fieldIndex = 0
+	uState.tally = 0
+	uState.overflow = false
+	if pointer != nil {
+		uState.pos = int64(*pointer)
+	}
+}
+
+//export cob_unstring_extract
+func cob_unstring_extract(dest unsafe.Pointer, destSize C.long,
+	delimIn *C.char, delimInSize C.long,
+	countIn *C.long,
+	delim1 unsafe.Pointer, delim1Size C.long,
+	delim2 unsafe.Pointer, delim2Size C.long) C.int {
+
+	if uState.overflow {
+		return 0
+	}
+
+	srcSize := uState.srcSize
+	pos := uState.pos - 1
+	if pos >= srcSize {
+		uState.overflow = true
+		return 0
+	}
+
+	// Find the next delimiter in source starting at pos
+	nextDelim := srcSize // position of next delimiter in source (0-based, after pos)
+	var foundDelim []byte
+
+	if delim1 != nil {
+		d1 := C.GoBytes(delim1, C.int(delim1Size))
+		idx := indexAt(unsafe.Pointer(uintptr(uState.src)+uintptr(pos)), srcSize-pos, d1)
+		if idx >= 0 && pos+idx < nextDelim {
+			nextDelim = pos + idx
+			foundDelim = d1
+		}
+	}
+	if delim2 != nil {
+		d2 := C.GoBytes(delim2, C.int(delim2Size))
+		idx := indexAt(unsafe.Pointer(uintptr(uState.src)+uintptr(pos)), srcSize-pos, d2)
+		if idx >= 0 && pos+idx < nextDelim {
+			nextDelim = pos + idx
+			foundDelim = d2
+		}
+	}
+
+	// Copy from pos to nextDelim into destination
+	cpLen := nextDelim - pos
+	if dest != nil && destSize > 0 {
+		maxCopy := int64(destSize)
+		if cpLen < maxCopy {
+			maxCopy = cpLen
+		}
+		for i := int64(0); i < maxCopy; i++ {
+			b := *(*byte)(unsafe.Pointer(uintptr(uState.src) + uintptr(pos+i)))
+			*(*byte)(unsafe.Pointer(uintptr(dest) + uintptr(i))) = b
+		}
+		// Pad remaining with spaces
+		for i := cpLen; i < int64(destSize); i++ {
+			*(*byte)(unsafe.Pointer(uintptr(dest) + uintptr(i))) = ' '
+		}
+	}
+
+	// Store delimiter in
+	if delimIn != nil && foundDelim != nil {
+		maxCopy := int64(delimInSize)
+		if int64(len(foundDelim)) < maxCopy {
+			maxCopy = int64(len(foundDelim))
+		}
+		for i := int64(0); i < maxCopy; i++ {
+			*(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(delimIn)) + uintptr(i))) = foundDelim[i]
+		}
+		for i := int64(len(foundDelim)); i < int64(delimInSize); i++ {
+			*(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(delimIn)) + uintptr(i))) = ' '
+		}
+	}
+
+	// Store count
+	if countIn != nil {
+		*countIn = C.long(cpLen)
+	}
+
+	// Advance position past the extracted data and delimiter
+	uState.pos = pos + cpLen + 1
+	if foundDelim != nil {
+		uState.pos = pos + cpLen + int64(len(foundDelim)) + 1
+	}
+
+	uState.tally++
+	uState.fieldIndex++
+
+	return 0
+}
+
+//export cob_unstring_finish
+func cob_unstring_finish(pointer *C.long, tally *C.long, overflow *C.int) {
+	if pointer != nil {
+		*pointer = C.long(uState.pos)
+	}
+	if tally != nil {
+		*tally = C.long(uState.tally)
+	}
+	if uState.overflow {
+		*overflow = 1
+	}
+	uState.src = nil
+}
+
+func indexAt(buf unsafe.Pointer, bufLen int64, needle []byte) int64 {
+	if len(needle) == 0 {
+		return -1
+	}
+	needleLen := int64(len(needle))
+	for i := int64(0); i <= bufLen-needleLen; i++ {
+		match := true
+		for j := int64(0); j < needleLen; j++ {
+			b := *(*byte)(unsafe.Pointer(uintptr(buf) + uintptr(i+j)))
+			if b != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
 func main() {}
 
 type stringReader struct {

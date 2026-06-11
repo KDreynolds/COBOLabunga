@@ -119,6 +119,10 @@ func (c *Checker) checkStatement(stmt parser.Statement) {
 		c.checkEvaluate(s)
 	case *parser.StopRun:
 		// always valid
+	case *parser.StringStmt:
+		c.checkString(s)
+	case *parser.UnstringStmt:
+		c.checkUnstring(s)
 	case *parser.HttpGet:
 		c.checkHttpGet(s)
 	case *parser.HttpPost:
@@ -223,6 +227,73 @@ func (c *Checker) checkEvaluate(s *parser.Evaluate) {
 		}
 	}
 	for _, stmt := range s.WhenOther {
+		c.checkStatement(stmt)
+	}
+}
+
+func (c *Checker) checkString(s *parser.StringStmt) {
+	for _, f := range s.Sending {
+		c.checkExpr(f.Source)
+		if f.Delimiter.Type == parser.DelimByIdentifier && f.Delimiter.Value != nil {
+			c.checkExpr(f.Delimiter.Value)
+		}
+	}
+	if s.Into != "" {
+		sym := c.lookup(s.Into, s.Line, s.Col)
+		if sym != nil && sym.Type != TypeAlphanumeric {
+			c.err("string into target '%s' must be alphanumeric (PIC X)", s.Line, s.Col, s.Into)
+		}
+	}
+	if s.Pointer != "" {
+		sym := c.lookup(s.Pointer, s.Line, s.Col)
+		if sym != nil && sym.Type != TypeNumericComp {
+			c.err("string pointer '%s' must be PIC 9(n) COMP", s.Line, s.Col, s.Pointer)
+		}
+	}
+	for _, stmt := range s.OnOverflow {
+		c.checkStatement(stmt)
+	}
+	for _, stmt := range s.NotOnOverflow {
+		c.checkStatement(stmt)
+	}
+}
+
+func (c *Checker) checkUnstring(s *parser.UnstringStmt) {
+	c.checkExpr(s.Source)
+	for _, f := range s.Into {
+		sym := c.lookup(f.Destination, s.Line, s.Col)
+		if sym != nil && sym.Type != TypeAlphanumeric && sym.Type != TypeNumeric {
+			c.err("unstring target '%s' must be alphanumeric (PIC X)", s.Line, s.Col, f.Destination)
+		}
+		if f.DelimiterIn != "" {
+			dSym := c.lookup(f.DelimiterIn, s.Line, s.Col)
+			if dSym != nil && dSym.Type != TypeAlphanumeric {
+				c.err("delimiter field '%s' must be alphanumeric (PIC X)", s.Line, s.Col, f.DelimiterIn)
+			}
+		}
+		if f.CountIn != "" {
+			cSym := c.lookup(f.CountIn, s.Line, s.Col)
+			if cSym != nil && cSym.Type != TypeNumeric && cSym.Type != TypeNumericComp {
+				c.err("count field '%s' must be numeric", s.Line, s.Col, f.CountIn)
+			}
+		}
+	}
+	if s.Pointer != "" {
+		sym := c.lookup(s.Pointer, s.Line, s.Col)
+		if sym != nil && sym.Type != TypeNumericComp {
+			c.err("unstring pointer '%s' must be PIC 9(n) COMP", s.Line, s.Col, s.Pointer)
+		}
+	}
+	if s.Tallying != "" {
+		sym := c.lookup(s.Tallying, s.Line, s.Col)
+		if sym != nil && sym.Type != TypeNumeric && sym.Type != TypeNumericComp {
+			c.err("tallying field '%s' must be numeric", s.Line, s.Col, s.Tallying)
+		}
+	}
+	for _, stmt := range s.OnOverflow {
+		c.checkStatement(stmt)
+	}
+	for _, stmt := range s.NotOnOverflow {
 		c.checkStatement(stmt)
 	}
 }
