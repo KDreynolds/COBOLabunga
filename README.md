@@ -4,6 +4,37 @@ A from-scratch COBOL compiler written in Go, vibe-coded into
 existence. Emits LLVM IR, compiles to native binaries and WASM.
 Not a fork of GnuCOBOL. Not a transpiler. It just works.
 
+New: now emit bare metal x86 kernels for booting directly under QEMU.
+
+## Bare metal / COBOLOS kernel
+
+Compile COBOL to a standalone kernel that boots on bare metal or QEMU
+with its own VGA display, PS/2 keyboard driver, and inline string
+comparison — zero hosted runtime dependencies.
+
+**Build and run:**
+```
+$ ./cobos/build.sh cobos/kernel.cbl     # compiles → cobos/kernel.elf
+$ qemu-system-x86_64 -kernel cobos/kernel.elf -display curses \
+    -device isa-debug-exit,iobase=0xf4,iosize=4
+```
+
+The kernel shell accepts commands: `HELLO`, `HELP`, `VERSION`, `QUIT`.
+
+**Bare metal statements:**
+- `PEEK(address) INTO variable` — read a byte from physical memory
+- `POKE address, value` — write a byte to physical memory
+- `PORT-OUT(port, value)` — output byte to I/O port
+- `PORT-IN(port) INTO variable` — read byte from I/O port
+- `DISPLAY` writes to VGA text-mode buffer at 0xB8000
+- `ACCEPT` polls PS/2 keyboard (port 0x60/0x64, Set 1 scancodes)
+- `EVALUATE` string comparison uses inline LLVM IR, no libc
+
+Compile with `--target x86-bare` (set automatically by `build.sh`).
+The compiler emits pure LLVM IR: VGA helpers, PS/2 driver, scancode
+lookup table, and string `PIC X` equality are all defined as LLVM IR
+functions — no Go runtime, no libc, no `printf`.
+
 ## Current status
 
 All working and tested:
@@ -16,6 +47,8 @@ All working and tested:
 - HTTP server: LISTEN, RESPOND with HEADERS clause
 - JSON: field expressions, request/response headers, PIC X equality
 - Runtime: pure Go c-archive linked via clang
+- Bare metal: `--target x86-bare` emits standalone Multiboot ELF with
+  VGA, PS/2 keyboard, PEEK/POKE/PORT I/O, inline PIC X comparison
 
 ## Known bugs / deferred
 
@@ -135,11 +168,16 @@ COBOLabunga/
 ├── runtime/
 │   ├── go.mod           # Separate module for CGO build
 │   └── runtime.go       # Pure Go HTTP client (net/http, //export cgo)
-└── examples/
-    ├── hello.cbl        # Hello world
-    ├── compute.cbl      # MOVE / COMPUTE / DISPLAY
-    ├── httpget.cbl      # HTTP-GET with GIVING + STATUS
-    └── httpmap.cbl      # HTTP-GET with MAPPING (JSON → fields)
+├── examples/
+│   ├── hello.cbl        # Hello world
+│   ├── compute.cbl      # MOVE / COMPUTE / DISPLAY
+│   ├── httpget.cbl      # HTTP-GET with GIVING + STATUS
+│   └── httpmap.cbl      # HTTP-GET with MAPPING (JSON → fields)
+└── cobos/
+    ├── kernel.cbl       # COBOLOS kernel (shell, PS/2 input, VGA)
+    ├── boot.S           # Multiboot1+2 boot stub, 32‑bit entry
+    ├── cobos.ld         # Linker script (loads at 1 MB)
+    └── build.sh         # Build pipeline: .cbl → .ll → .o → .elf
 ```
 
 ## Relationship to COBOLScript

@@ -75,7 +75,7 @@ func (c *Codegen) Generate() string {
 		c.emit("declare void @cob_unstring_finish(ptr, ptr, ptr)")
 		c.emit("")
 	} else {
-		c.emit("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
+		c.emit("declare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)")
 		c.emit("")
 	}
 
@@ -182,26 +182,22 @@ func (c *Codegen) emitStringConsts() {
 }
 
 func (c *Codegen) emitMain() {
+	if c.isBare() {
+		// No _start: boot.S defines _start and calls cob.KERNEL_MAIN directly
+		return
+	}
 	isWasm := strings.Contains(c.targetTriple, "wasm")
 	entryName := "main"
 	if isWasm {
 		entryName = "__main_argc_argv"
 	}
-	if c.isBare() {
-		c.emit("define void @_start() noreturn {")
-	} else {
-		c.emit("define hidden i32 @%s(i32 %%argc, ptr %%argv) nounwind {", entryName)
-	}
+	c.emit("define hidden i32 @%s(i32 %%argc, ptr %%argv) nounwind {", entryName)
 	c.indent++
 	firstPara := c.firstParagraphName()
 	if firstPara != "" {
 		c.emit("call void @%s()", firstPara)
 	}
-	if c.isBare() {
-		c.emit("ret void")
-	} else {
-		c.emit("ret i32 0")
-	}
+	c.emit("ret i32 0")
 	c.indent--
 	c.emit("}")
 	c.emit("")
@@ -278,7 +274,13 @@ func (c *Codegen) emitStatement(stmt parser.Statement) {
 
 func (c *Codegen) emitAccept(s *parser.Accept) {
 	if c.isBare() {
-		panic("ACCEPT not yet supported on bare metal target")
+		name := sanitize(s.Name)
+		size := c.fieldSize(s.Name)
+		ptr := c.nextRegister()
+		sz := int64(size) + 1
+		c.emit("%%%s = getelementptr [%d x i8], ptr @%s, i32 0, i32 0", ptr, sz, name)
+		c.emit("call void @cob_bare_accept(ptr %%%s, i32 %d)", ptr, size)
+		return
 	}
 	name := sanitize(s.Name)
 	size := c.fieldSize(s.Name)
@@ -343,11 +345,9 @@ func (c *Codegen) emitPeek(s *parser.Peek) {
 		panic("PEEK requires --target x86-bare")
 	}
 	addr := c.emitExpr(s.Address)
-	addr64 := c.nextRegister()
-	c.emit("%%%s = sext i32 %s to i64", addr64, addr)
 	ptr := c.nextRegister()
 	into := sanitize(s.Into)
-	c.emit("%%%s = inttoptr i64 %%%s to ptr", ptr, addr64)
+	c.emit("%%%s = inttoptr i32 %s to ptr", ptr, addr)
 	val := c.nextRegister()
 	c.emit("%%%s = load i8, ptr %%%s", val, ptr)
 	ext := c.nextRegister()
@@ -360,12 +360,10 @@ func (c *Codegen) emitPoke(s *parser.Poke) {
 		panic("POKE requires --target x86-bare")
 	}
 	addr := c.emitExpr(s.Address)
-	addr64 := c.nextRegister()
-	c.emit("%%%s = sext i32 %s to i64", addr64, addr)
 	val := c.emitExpr(s.Value)
 	ptr := c.nextRegister()
 	trunc := c.nextRegister()
-	c.emit("%%%s = inttoptr i64 %%%s to ptr", ptr, addr64)
+	c.emit("%%%s = inttoptr i32 %s to ptr", ptr, addr)
 	c.emit("%%%s = trunc i32 %s to i8", trunc, val)
 	c.emit("store i8 %%%s, ptr %%%s", trunc, ptr)
 }
@@ -464,22 +462,23 @@ func (c *Codegen) emitBareDisplay(s *parser.Display) {
 				name := sanitize(expr.Name)
 				reg := c.nextRegister()
 				size := c.fieldSize(expr.Name)
-				c.emit("%%%s = getelementptr [%d x i8], ptr @%s, i64 0, i64 0",
+				c.emit("%%%s = getelementptr [%d x i8], ptr @%s, i32 0, i32 0",
 					reg, size+1, name)
-				c.emit("call void @cob_bare_print_str(ptr %%%s, i64 %d)", reg, size)
+				c.emit("call void @cob_bare_print_str(ptr %%%s, i32 %d)", reg, size)
 			}
 		case *parser.StringLiteralExpr:
 			cn := c.addStringConst([]byte(expr.Value))
 			sz := len(expr.Value)
-			c.emit("call void @cob_bare_print_str(ptr getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0), i64 %d)",
+			c.emit("call void @cob_bare_print_str(ptr getelementptr inbounds ([%d x i8], ptr @%s, i32 0, i32 0), i32 %d)",
 				sz+1, cn, sz)
 		case *parser.IntegerLiteralExpr:
 			str := fmt.Sprintf("%d", expr.Value)
 			cn := c.addStringConst([]byte(str))
 			sz := len(str)
-			c.emit("call void @cob_bare_print_str(ptr getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0), i64 %d)",
+			c.emit("call void @cob_bare_print_str(ptr getelementptr inbounds ([%d x i8], ptr @%s, i32 0, i32 0), i32 %d)",
 				sz+1, cn, sz)
 		}
+		c.emit("call void @cob_bare_newline()")
 	}
 }
 
@@ -1129,8 +1128,14 @@ func (c *Codegen) emitExpr(expr parser.Expression) string {
 				leftPtr := c.emitExprPtr(e.Left)
 				rightPtr := c.emitExprPtr(e.Right)
 				leftSize := c.exprSize(e.Left)
-				c.emit("%%%s = call i32 @cob_picx_eq(ptr %s, i64 %d, ptr %s)",
-					tmp, leftPtr, leftSize, rightPtr)
+				eqFn := "cob_picx_eq"
+				sizeType := "i64"
+				if c.isBare() {
+					eqFn = "cob_bare_picx_eq"
+					sizeType = "i32"
+				}
+				c.emit("%%%s = call i32 @%s(ptr %s, %s %d, ptr %s)",
+					tmp, eqFn, leftPtr, sizeType, leftSize, rightPtr)
 				return "%" + tmp
 			}
 			// Numeric comparison
@@ -1258,14 +1263,20 @@ func (c *Codegen) emitEvaluate(s *parser.Evaluate) {
 		labelBody := c.nextLabel("eval.body")
 
 		if isStringEval {
-			// String comparison via cob_picx_eq
-			leftPtr := c.emitExprPtr(s.Subject)
-			rightPtr := c.emitExprPtr(wc.Values[0])
-			leftSize := c.exprSize(s.Subject)
-			tmp := c.nextRegister()
-			c.emit("%%%s = call i32 @cob_picx_eq(ptr %s, i64 %d, ptr %s)",
-				tmp, leftPtr, leftSize, rightPtr)
-			c.emit("%%cmp%d = icmp ne i32 %%%s, 0", i, tmp)
+				// String comparison via cob_picx_eq
+				leftPtr := c.emitExprPtr(s.Subject)
+				rightPtr := c.emitExprPtr(wc.Values[0])
+				leftSize := c.exprSize(s.Subject)
+				tmp := c.nextRegister()
+				eqFn := "cob_picx_eq"
+				sizeType := "i64"
+				if c.isBare() {
+					eqFn = "cob_bare_picx_eq"
+					sizeType = "i32"
+				}
+				c.emit("%%%s = call i32 @%s(ptr %s, %s %d, ptr %s)",
+					tmp, eqFn, leftPtr, sizeType, leftSize, rightPtr)
+				c.emit("%%cmp%d = icmp ne i32 %%%s, 0", i, tmp)
 		} else {
 			// Numeric comparison
 			subject := c.emitExpr(s.Subject)
@@ -1743,50 +1754,56 @@ func (c *Codegen) emitBareHelpers() {
 	c.emit("; VGA cursor position (col 0-based)")
 	c.emit("@cob.vga.col = global i32 0")
 	c.emit("")
+	c.emitBareScancodeTable()
 	c.buf.WriteString(vgaCode)
 	c.buf.WriteString("\n")
 }
 
+func (c *Codegen) emitBareScancodeTable() {
+	c.emit("; PS/2 Set 1 scancode → ASCII lookup table")
+	c.emit("@cob.scancode_table = global [128 x i8] [i8 0,i8 27,i8 49,i8 50,i8 51,i8 52,i8 53,i8 54,i8 55,i8 56,i8 57,i8 48,i8 45,i8 61,i8 8,i8 9,i8 81,i8 87,i8 69,i8 82,i8 84,i8 89,i8 85,i8 73,i8 79,i8 80,i8 91,i8 93,i8 10,i8 0,i8 65,i8 83,i8 68,i8 70,i8 71,i8 72,i8 74,i8 75,i8 76,i8 59,i8 39,i8 96,i8 0,i8 92,i8 90,i8 88,i8 67,i8 86,i8 66,i8 78,i8 77,i8 44,i8 46,i8 47,i8 0,i8 42,i8 0,i8 32,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 55,i8 56,i8 57,i8 45,i8 52,i8 53,i8 54,i8 43,i8 49,i8 50,i8 51,i8 48,i8 46,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0,i8 0]")
+	c.emit("")
+}
+
 var vgaCode = `
-define void @cob_bare_print_str(ptr %str, i64 %len) {
+define void @cob_bare_print_str(ptr %str, i32 %len) {
 entry:
-  %vga = inttoptr i64 7047296 to ptr
+  %vga = inttoptr i32 753664 to ptr
   %col = load i32, ptr @cob.vga.col
-  %col_sext = sext i32 %col to i64
-  %vga_start = getelementptr i8, ptr %vga, i64 %col_sext
+  %col_bytes = mul i32 %col, 2
+  %vga_start = getelementptr i8, ptr %vga, i32 %col_bytes
   br label %loop
 loop:
-  %i = phi i64 [ 0, %entry ], [ %next_i, %body ]
+  %i = phi i32 [ 0, %entry ], [ %next_i, %body ]
   %dst = phi ptr [ %vga_start, %entry ], [ %dst_next, %body ]
-  %done = icmp eq i64 %i, %len
+  %done = icmp eq i32 %i, %len
   br i1 %done, label %done_bb, label %body
 body:
-  %ch_ptr = getelementptr i8, ptr %str, i64 %i
+  %ch_ptr = getelementptr i8, ptr %str, i32 %i
   %ch = load i8, ptr %ch_ptr
   store i8 %ch, ptr %dst
-  %attr = getelementptr i8, ptr %dst, i64 1
+  %attr = getelementptr i8, ptr %dst, i32 1
   store i8 7, ptr %attr
-  %next_i = add i64 %i, 1
-  %dst_next = getelementptr i8, ptr %dst, i64 2
+  %next_i = add i32 %i, 1
+  %dst_next = getelementptr i8, ptr %dst, i32 2
   br label %loop
 done_bb:
-  %new_col = add i64 %col_sext, %len
-  %new_col_trunc = trunc i64 %new_col to i32
-  store i32 %new_col_trunc, ptr @cob.vga.col
+  %new_col = add i32 %col, %len
+  store i32 %new_col, ptr @cob.vga.col
   ret void
 }
 
 define void @cob_bare_print_int(i32 %val) {
 entry:
-  %vga = inttoptr i64 7047296 to ptr
+  %vga = inttoptr i32 753664 to ptr
   %col = load i32, ptr @cob.vga.col
-  %col_sext = sext i32 %col to i64
-  %vga_start = getelementptr i8, ptr %vga, i64 %col_sext
+  %col_bytes = mul i32 %col, 2
+  %vga_start = getelementptr i8, ptr %vga, i32 %col_bytes
   %zero = icmp eq i32 %val, 0
   br i1 %zero, label %zero_bb, label %nz_entry
 zero_bb:
   store i8 48, ptr %vga_start
-  %za = getelementptr i8, ptr %vga_start, i64 1
+  %za = getelementptr i8, ptr %vga_start, i32 1
   store i8 7, ptr %za
   store i32 2, ptr @cob.vga.col
   ret void
@@ -1795,7 +1812,7 @@ nz_entry:
   br i1 %neg, label %neg_bb, label %digits
 neg_bb:
   store i8 45, ptr %vga_start
-  %na = getelementptr i8, ptr %vga_start, i64 1
+  %na = getelementptr i8, ptr %vga_start, i32 1
   store i8 7, ptr %na
   %neg_val = sub i32 0, %val
   br label %digits
@@ -1818,41 +1835,275 @@ entry:
   br i1 %is_zero, label %zero_bb, label %conv
 zero_bb:
   store i8 48, ptr %buf
-  %za = getelementptr i8, ptr %buf, i64 1
+  %za = getelementptr i8, ptr %buf, i32 1
   store i8 7, ptr %za
   ret i32 1
 conv:
   br label %conv_loop
 conv_loop:
   %val = phi i32 [ %n, %conv ], [ %div, %conv_loop ]
-  %pos = phi i64 [ 0, %conv ], [ %p_next, %conv_loop ]
+  %pos = phi i32 [ 0, %conv ], [ %p_next, %conv_loop ]
   %div = udiv i32 %val, 10
   %rem = urem i32 %val, 10
   %dig = trunc i32 %rem to i8
   %dig_ch = add i8 48, %dig
-  %slot = getelementptr i8, ptr %tmp, i64 %pos
+  %slot = getelementptr i8, ptr %tmp, i32 %pos
   store i8 %dig_ch, ptr %slot
-  %p_next = add i64 %pos, 1
+  %p_next = add i32 %pos, 1
   %div_end = icmp eq i32 %div, 0
   br i1 %div_end, label %conv_done, label %conv_loop
 conv_done:
-  %len = trunc i64 %p_next to i32
   br label %copy_loop
 copy_loop:
-  %ci = phi i64 [ 0, %conv_done ], [ %ci_next, %copy_loop ]
-  %ri = phi i64 [ %p_next, %conv_done ], [ %ri_next, %copy_loop ]
-  %ri_dec = sub i64 %ri, 1
-  %src = getelementptr i8, ptr %tmp, i64 %ri_dec
+  %ci = phi i32 [ 0, %conv_done ], [ %ci_next, %copy_loop ]
+  %ri = phi i32 [ %p_next, %conv_done ], [ %ri_next, %copy_loop ]
+  %ri_dec = sub i32 %ri, 1
+  %src = getelementptr i8, ptr %tmp, i32 %ri_dec
   %ch = load i8, ptr %src
-  %dst_p = getelementptr i8, ptr %buf, i64 %ci
+  %ci_bytes = mul i32 %ci, 2
+  %dst_p = getelementptr i8, ptr %buf, i32 %ci_bytes
   store i8 %ch, ptr %dst_p
-  %attrd = getelementptr i8, ptr %dst_p, i64 1
+  %attrd = getelementptr i8, ptr %dst_p, i32 1
   store i8 7, ptr %attrd
-  %ci_next = add i64 %ci, 1
-  %ri_next = sub i64 %ri_dec, 0
-  %copy_end = icmp eq i64 %ri_dec, 0
+  %ci_next = add i32 %ci, 1
+  %ri_next = sub i32 %ri_dec, 0
+  %copy_end = icmp eq i32 %ri_dec, 0
   br i1 %copy_end, label %final, label %copy_loop
 final:
-  ret i32 %len
+  ret i32 %p_next
+}
+
+define void @cob_bare_newline() {
+entry:
+  %col = load i32, ptr @cob.vga.col
+  %row = sdiv i32 %col, 80
+  %next_row = add i32 %row, 1
+  %need_scroll = icmp sge i32 %next_row, 25
+  br i1 %need_scroll, label %scroll_init, label %set_col
+
+scroll_init:
+  %vga = inttoptr i32 753664 to ptr
+  br label %scroll_loop
+
+scroll_loop:
+  %si = phi i32 [ 0, %scroll_init ], [ %si_next, %scroll_loop ]
+  %src = getelementptr i8, ptr %vga, i32 160
+  %src_off = getelementptr i8, ptr %src, i32 %si
+  %sc = load i8, ptr %src_off
+  %dst_off = getelementptr i8, ptr %vga, i32 %si
+  store i8 %sc, ptr %dst_off
+  %si_next = add i32 %si, 1
+  %scroll_done = icmp eq i32 %si_next, 3840
+  br i1 %scroll_done, label %clear_init, label %scroll_loop
+
+clear_init:
+  %last_line = getelementptr i8, ptr %vga, i32 3840
+  br label %clear_loop
+
+clear_loop:
+  %ci = phi i32 [ 0, %clear_init ], [ %ci_next, %clear_loop ]
+  %cdst = getelementptr i8, ptr %last_line, i32 %ci
+  store i8 32, ptr %cdst
+  %cdsta = getelementptr i8, ptr %cdst, i32 1
+  store i8 7, ptr %cdsta
+  %ci_next = add i32 %ci, 2
+  %clear_done = icmp eq i32 %ci_next, 160
+  br i1 %clear_done, label %scroll_done_bb, label %clear_loop
+
+scroll_done_bb:
+  store i32 1920, ptr @cob.vga.col
+  ret void
+
+set_col:
+  %new_col = mul i32 %next_row, 80
+  store i32 %new_col, ptr @cob.vga.col
+  ret void
+}
+
+define i32 @cob_bare_picx_eq(ptr %a, i32 %a_size, ptr %b) {
+entry:
+  br label %trim_a
+
+trim_a:
+  %ai = phi i32 [ %a_size, %entry ], [ %ai_dec, %trim_a_chk ]
+  %ai_dec = sub i32 %ai, 1
+  %a_done = icmp slt i32 %ai_dec, 0
+  br i1 %a_done, label %trim_a_done_zero, label %trim_a_chk
+
+trim_a_chk:
+  %a_ptr = getelementptr i8, ptr %a, i32 %ai_dec
+  %a_ch = load i8, ptr %a_ptr
+  %a_is_space = icmp eq i8 %a_ch, 32
+  %ai_dec_p1 = add i32 %ai_dec, 1
+  br i1 %a_is_space, label %trim_a, label %trim_a_done
+
+trim_a_done_zero:
+  br label %trim_a_done
+
+trim_a_done:
+  %a_trim_len = phi i32 [ 0, %trim_a_done_zero ], [ %ai_dec_p1, %trim_a_chk ]
+  br label %strlen_b
+
+strlen_b:
+  br label %strlen_b_loop
+
+strlen_b_loop:
+  %bi = phi i32 [ 0, %strlen_b ], [ %bi_next, %strlen_b_chk ]
+  %b_ptr = getelementptr i8, ptr %b, i32 %bi
+  %b_ch = load i8, ptr %b_ptr
+  %b_is_null = icmp eq i8 %b_ch, 0
+  br i1 %b_is_null, label %strlen_b_done, label %strlen_b_chk
+
+strlen_b_chk:
+  %bi_next = add i32 %bi, 1
+  br label %strlen_b_loop
+
+strlen_b_done:
+  br label %trim_b
+
+trim_b:
+  %bti = phi i32 [ %bi, %strlen_b_done ], [ %bti_dec, %trim_b_chk ]
+  %bti_dec = sub i32 %bti, 1
+  %b_done = icmp slt i32 %bti_dec, 0
+  br i1 %b_done, label %trim_b_done_zero, label %trim_b_chk
+
+trim_b_chk:
+  %b_ptr2 = getelementptr i8, ptr %b, i32 %bti_dec
+  %b_ch2 = load i8, ptr %b_ptr2
+  %b_is_space2 = icmp eq i8 %b_ch2, 32
+  %bti_dec_p1 = add i32 %bti_dec, 1
+  br i1 %b_is_space2, label %trim_b, label %trim_b_done
+
+trim_b_done_zero:
+  br label %trim_b_done
+
+trim_b_done:
+  %b_trim_len = phi i32 [ 0, %trim_b_done_zero ], [ %bti_dec_p1, %trim_b_chk ]
+  %len_diff = icmp ne i32 %a_trim_len, %b_trim_len
+  br i1 %len_diff, label %no_match, label %cmp
+
+cmp:
+  br label %cmp_loop
+
+cmp_loop:
+  %ci = phi i32 [ 0, %cmp ], [ %ci_next, %cmp_next ]
+  %cmp_done = icmp eq i32 %ci, %a_trim_len
+  br i1 %cmp_done, label %match, label %cmp_chk
+
+cmp_chk:
+  %ca_ptr = getelementptr i8, ptr %a, i32 %ci
+  %ca_ch = load i8, ptr %ca_ptr
+  %cb_ptr = getelementptr i8, ptr %b, i32 %ci
+  %cb_ch = load i8, ptr %cb_ptr
+  %ch_diff = icmp ne i8 %ca_ch, %cb_ch
+  br i1 %ch_diff, label %no_match, label %cmp_next
+
+cmp_next:
+  %ci_next = add i32 %ci, 1
+  br label %cmp_loop
+
+match:
+  ret i32 1
+
+no_match:
+  ret i32 0
+}
+
+define void @cob_bare_accept(ptr %buf, i32 %size) {
+entry:
+  %vga_pos = alloca i32, align 4
+  %buf_pos = alloca i32, align 4
+  %col = load i32, ptr @cob.vga.col
+  %col_bytes = mul i32 %col, 2
+  store i32 %col_bytes, ptr %vga_pos
+  store i32 0, ptr %buf_pos
+  br label %loop
+
+loop:
+  %status = call i8 asm "inb $1, $0", "={al},{dx}"(i16 100)
+  %ready_bit = and i8 %status, 1
+  %ready = icmp ne i8 %ready_bit, 0
+  br i1 %ready, label %read_scancode, label %loop
+
+read_scancode:
+  %scancode = call i8 asm "inb $1, $0", "={al},{dx}"(i16 96)
+  %sc = zext i8 %scancode to i32
+  %is_break = icmp uge i32 %sc, 128
+  br i1 %is_break, label %loop, label %lookup
+
+lookup:
+  %ascii_ptr = getelementptr [128 x i8], ptr @cob.scancode_table, i32 0, i32 %sc
+  %ascii = load i8, ptr %ascii_ptr
+  %is_enter = icmp eq i8 %ascii, 10
+  br i1 %is_enter, label %done, label %check_bs
+
+check_bs:
+  %is_bs = icmp eq i8 %ascii, 8
+  br i1 %is_bs, label %do_bs, label %check_printable
+
+do_bs:
+  %bp = load i32, ptr %buf_pos
+  %bp_pos = icmp ugt i32 %bp, 0
+  br i1 %bp_pos, label %do_bs_erase, label %loop
+
+do_bs_erase:
+  %new_bp = sub i32 %bp, 1
+  store i32 %new_bp, ptr %buf_pos
+  %vp = load i32, ptr %vga_pos
+  %vp_sub = sub i32 %vp, 2
+  %vga_base = inttoptr i32 753664 to ptr
+  %vp_erase = getelementptr i8, ptr %vga_base, i32 %vp_sub
+  store i8 32, ptr %vp_erase
+  %vp_attr = getelementptr i8, ptr %vp_erase, i32 1
+  store i8 7, ptr %vp_attr
+  store i32 %vp_sub, ptr %vga_pos
+  br label %loop
+
+check_printable:
+  %is_printable = icmp uge i8 %ascii, 32
+  br i1 %is_printable, label %do_print, label %loop
+
+do_print:
+  %bp2 = load i32, ptr %buf_pos
+  %max = sub i32 %size, 1
+  %has_room = icmp ult i32 %bp2, %max
+  br i1 %has_room, label %store_char, label %loop
+
+store_char:
+  %buf_ptr = getelementptr i8, ptr %buf, i32 %bp2
+  store i8 %ascii, ptr %buf_ptr
+  %vp2 = load i32, ptr %vga_pos
+  %vga_base2 = inttoptr i32 753664 to ptr
+  %vp_write = getelementptr i8, ptr %vga_base2, i32 %vp2
+  store i8 %ascii, ptr %vp_write
+  %vp_attr2 = getelementptr i8, ptr %vp_write, i32 1
+  store i8 7, ptr %vp_attr2
+  %vp_next = add i32 %vp2, 2
+  store i32 %vp_next, ptr %vga_pos
+  %bp2_next = add i32 %bp2, 1
+  store i32 %bp2_next, ptr %buf_pos
+  br label %loop
+
+done:
+  %bp3 = load i32, ptr %buf_pos
+  br label %pad
+
+pad:
+  %pi = phi i32 [ %bp3, %done ], [ %pi_next, %pad_chk ]
+  %done_pad = icmp eq i32 %pi, %size
+  br i1 %done_pad, label %finish, label %pad_chk
+
+pad_chk:
+  %pad_ptr = getelementptr i8, ptr %buf, i32 %pi
+  store i8 32, ptr %pad_ptr
+  %pi_next = add i32 %pi, 1
+  br label %pad
+
+finish:
+  %vp3 = load i32, ptr %vga_pos
+  %vp3_char = sdiv i32 %vp3, 2
+  store i32 %vp3_char, ptr @cob.vga.col
+  call void @cob_bare_newline()
+  ret void
 }
 `

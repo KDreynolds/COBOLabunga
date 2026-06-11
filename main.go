@@ -83,7 +83,7 @@ func main() {
 	if wasmTarget {
 		cg.SetTarget("wasm32-unknown-wasi")
 	} else if bareMetal {
-		cg.SetTarget("x86_64-pc-none-elf")
+		cg.SetTarget("i686-pc-none-elf")
 	}
 	ir := cg.Generate()
 
