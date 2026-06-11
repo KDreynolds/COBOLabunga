@@ -412,7 +412,7 @@ func (p *Parser) isScopeTerminator() bool {
 func (p *Parser) isStatementStart() bool {
 	switch p.peek().Type {
 	case lexer.MOVE, lexer.COMPUTE, lexer.DISPLAY, lexer.PERFORM,
-		lexer.IF, lexer.EVALUATE, lexer.STOP,
+		lexer.IF, lexer.EVALUATE, lexer.STOP, lexer.INITIALIZE, lexer.ACCEPT,
 		lexer.STRING, lexer.UNSTRING,
 		lexer.HTTP_GET, lexer.HTTP_POST, lexer.HTTP_PUT,
 		lexer.HTTP_PATCH, lexer.HTTP_DELETE,
@@ -442,6 +442,10 @@ func (p *Parser) parseStatement() Statement {
 		return p.parseEvaluateStatement()
 	case lexer.STOP:
 		return p.parseStopRunStatement()
+	case lexer.INITIALIZE:
+		return p.parseInitializeStatement()
+	case lexer.ACCEPT:
+		return p.parseAcceptStatement()
 	case lexer.STRING:
 		return p.parseStringStatement()
 	case lexer.UNSTRING:
@@ -532,11 +536,18 @@ func (p *Parser) parsePerformStatement() *Perform {
 		return p.parsePerformVarying(stmt)
 	}
 
+	// PERFORM UNTIL condition ... END-PERFORM
+	if p.match(lexer.UNTIL) {
+		stmt.Until = p.parseExpression()
+		stmt.Body = p.parsePerformBody()
+		return stmt
+	}
+
 	// PERFORM paragraph-name ...
 	if p.peek().Type == lexer.IDENTIFIER {
 		stmt.Paragraph = p.advance().Literal
 	} else {
-		p.error("expected paragraph name or VARYING in PERFORM")
+		p.error("expected paragraph name, VARYING, or UNTIL in PERFORM")
 		return stmt
 	}
 
@@ -552,6 +563,28 @@ func (p *Parser) parsePerformStatement() *Perform {
 	}
 
 	return stmt
+}
+
+func (p *Parser) parsePerformBody() []Statement {
+	var body []Statement
+	for !p.atEnd() {
+		if p.match(lexer.END_PERFORM) {
+			break
+		}
+		if p.peek().Type == lexer.PERIOD {
+			break
+		}
+		s := p.parseStatement()
+		if s != nil {
+			body = append(body, s)
+		} else {
+			break
+		}
+		if p.match(lexer.PERIOD) {
+			break
+		}
+	}
+	return body
 }
 
 func (p *Parser) parsePerformVarying(stmt *Perform) *Perform {
@@ -590,26 +623,7 @@ func (p *Parser) parsePerformVarying(stmt *Perform) *Perform {
 	}
 
 	stmt.Varying = vp
-
-	// Parse body statements until END-PERFORM
-	for !p.atEnd() {
-		if p.match(lexer.END_PERFORM) {
-			break
-		}
-		if p.peek().Type == lexer.PERIOD {
-			break
-		}
-		s := p.parseStatement()
-		if s != nil {
-			stmt.Body = append(stmt.Body, s)
-		} else {
-			break
-		}
-		if p.match(lexer.PERIOD) {
-			break
-		}
-	}
-
+	stmt.Body = p.parsePerformBody()
 	return stmt
 }
 
@@ -708,6 +722,34 @@ func (p *Parser) parseStopRunStatement() *StopRun {
 		p.error("expected RUN after STOP")
 	}
 	return &StopRun{Line: tok.Line, Col: tok.Column}
+}
+
+func (p *Parser) parseInitializeStatement() *Initialize {
+	tok := p.advance() // consume INITIALIZE
+	stmt := &Initialize{Line: tok.Line, Col: tok.Column}
+
+	for !p.atEnd() && !p.isScopeTerminator() &&
+		p.peek().Type != lexer.PERIOD &&
+		!p.isStatementStart() {
+		if p.peek().Type == lexer.IDENTIFIER {
+			stmt.Items = append(stmt.Items, p.advance().Literal)
+		} else {
+			break
+		}
+	}
+
+	return stmt
+}
+
+func (p *Parser) parseAcceptStatement() *Accept {
+	tok := p.advance()
+	stmt := &Accept{Line: tok.Line, Col: tok.Column}
+	if p.peek().Type == lexer.IDENTIFIER {
+		stmt.Name = p.advance().Literal
+	} else {
+		p.error("expected identifier after ACCEPT")
+	}
+	return stmt
 }
 
 func (p *Parser) parseStringStatement() *StringStmt {

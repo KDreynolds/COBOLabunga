@@ -119,6 +119,10 @@ func (c *Checker) checkStatement(stmt parser.Statement) {
 		c.checkEvaluate(s)
 	case *parser.StopRun:
 		// always valid
+	case *parser.Initialize:
+		c.checkInitialize(s)
+	case *parser.Accept:
+		c.checkAccept(s)
 	case *parser.StringStmt:
 		c.checkString(s)
 	case *parser.UnstringStmt:
@@ -152,6 +156,14 @@ func (c *Checker) checkMove(s *parser.Move) {
 		c.err("move type mismatch: cannot move %s to %s field '%s'",
 			s.Line, s.Col, typeName(fromType), typeName(&Symbol{Type: toSym.Type}), s.To)
 	}
+
+	// Size mismatch warning: moving a larger source into a smaller target truncates
+	if fromType != nil && toSym.Type != TypeGroup && fromType.Size > 0 && toSym.Size > 0 {
+		if fromType.Size > toSym.Size*2 {
+			c.err("size mismatch in MOVE: source size (%d) is more than double target size (%d), truncation may occur",
+				s.Line, s.Col, fromType.Size, toSym.Size)
+		}
+	}
 }
 
 func (c *Checker) isMoveCompatible(from *Symbol, to *Symbol) bool {
@@ -170,8 +182,9 @@ func (c *Checker) checkCompute(s *parser.Compute) {
 	if target == nil {
 		return
 	}
-	if target.Type == TypeAlphanumeric {
-		c.err("compute target '%s' is alphanumeric, expected numeric", s.Line, s.Col, s.Target)
+	if target.Type == TypeAlphanumeric || target.Type == TypeGroup {
+		c.err("compute target '%s' must be numeric (PIC 9), got %s",
+			s.Line, s.Col, s.Target, typeName(target))
 	}
 	c.checkExpr(s.Expr)
 }
@@ -180,6 +193,16 @@ func (c *Checker) checkDisplay(s *parser.Display) {
 	for _, item := range s.Items {
 		c.checkExpr(item)
 	}
+}
+
+func (c *Checker) checkInitialize(s *parser.Initialize) {
+	for _, name := range s.Items {
+		c.lookup(name, s.Line, s.Col)
+	}
+}
+
+func (c *Checker) checkAccept(s *parser.Accept) {
+	c.lookup(s.Name, s.Line, s.Col)
 }
 
 func (c *Checker) checkPerform(s *parser.Perform) {
@@ -475,10 +498,33 @@ func (c *Checker) checkExpr(expr parser.Expression) {
 	case *parser.IdentifierExpr:
 		c.lookup(e.Name, e.Line, e.Column)
 	case *parser.BinaryExpr:
-		c.checkExpr(e.Left)
-		c.checkExpr(e.Right)
+		c.checkBinaryExpr(e)
 	case *parser.IntegerLiteralExpr, *parser.StringLiteralExpr:
 		// literals are always valid
+	}
+}
+
+func (c *Checker) checkBinaryExpr(e *parser.BinaryExpr) {
+	c.checkExpr(e.Left)
+	c.checkExpr(e.Right)
+
+	leftType, errL := c.exprType(e.Left)
+	rightType, errR := c.exprType(e.Right)
+	if errL != nil || errR != nil {
+		return
+	}
+
+	switch e.Operator {
+	case parser.OpAdd, parser.OpSub, parser.OpMul, parser.OpDiv:
+		// Arithmetic requires numeric operands
+		if leftType.Type == TypeAlphanumeric {
+			c.err("arithmetic operator requires numeric operand, got alphanumeric",
+				e.Left.ExprLine(), e.Left.ExprCol())
+		}
+		if rightType.Type == TypeAlphanumeric {
+			c.err("arithmetic operator requires numeric operand, got alphanumeric",
+				e.Right.ExprLine(), e.Right.ExprCol())
+		}
 	}
 }
 

@@ -371,7 +371,8 @@ func cob_picx_eq(a *C.char, aSize C.long, b *C.char) C.int {
 	aStr := C.GoBytes(unsafe.Pointer(a), C.int(aSize))
 	bStr := C.GoString(b)
 	aTrimmed := strings.TrimRight(string(aStr), " ")
-	if aTrimmed == bStr {
+	bTrimmed := strings.TrimRight(bStr, " ")
+	if aTrimmed == bTrimmed {
 		return 1
 	}
 	return 0

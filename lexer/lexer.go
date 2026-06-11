@@ -54,6 +54,8 @@ func buildKeywordMap() map[string]TokenType {
 		"END-EVALUATE":    END_EVALUATE,
 		"STOP":            STOP,
 		"RUN":             RUN,
+		"INITIALIZE":      INITIALIZE,
+		"ACCEPT":          ACCEPT,
 		"HTTP-GET":        HTTP_GET,
 		"HTTP-POST":       HTTP_POST,
 		"HTTP-PUT":        HTTP_PUT,
@@ -240,6 +242,38 @@ func (l *Lexer) readString(quote rune, line, col int) Token {
 
 func (l *Lexer) readNumber(line, col int) Token {
 	var buf strings.Builder
+	// Check for hex literal: 0x or 0X
+	first, _ := l.peek()
+	if first == '0' {
+		l.read()
+		ch, ok := l.peek()
+		if ok && (ch == 'x' || ch == 'X') {
+			l.read()
+			for {
+				ch, ok := l.peek()
+				if !ok || !isHexDigit(ch) {
+					break
+				}
+				buf.WriteRune(ch)
+				l.read()
+			}
+			val := 0
+			hex := buf.String()
+			for _, c := range hex {
+				val *= 16
+				switch {
+				case c >= '0' && c <= '9':
+					val += int(c - '0')
+				case c >= 'a' && c <= 'f':
+					val += int(c - 'a' + 10)
+				case c >= 'A' && c <= 'F':
+					val += int(c - 'A' + 10)
+				}
+			}
+			return Token{Type: INTEGER_LITERAL, Literal: fmt.Sprintf("%d", val), Line: line, Column: col}
+		}
+		buf.WriteRune('0')
+	}
 	for {
 		ch, ok := l.peek()
 		if !ok || !isDigit(ch) {
@@ -249,6 +283,10 @@ func (l *Lexer) readNumber(line, col int) Token {
 		l.read()
 	}
 	return Token{Type: INTEGER_LITERAL, Literal: buf.String(), Line: line, Column: col}
+}
+
+func isHexDigit(ch rune) bool {
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
 func (l *Lexer) readWord(line, col int) Token {

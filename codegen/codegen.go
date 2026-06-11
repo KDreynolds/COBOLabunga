@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 
@@ -41,6 +42,9 @@ func (c *Codegen) Generate() string {
 	c.emit("declare i32 @puts(ptr)")
 	c.emit("declare i32 @printf(ptr, ...)")
 	c.emit("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
+	c.emit("declare ptr @fgets(ptr, i32, ptr)")
+	c.emit("declare i32 @atoi(ptr)")
+	c.emit("@stdin = external global ptr")
 	c.emit("")
 	c.emit("declare i32 @cob_http_get(ptr, ptr, i64, ptr, ptr)")
 	c.emit("declare i32 @cob_http_post(ptr, ptr, ptr, i64, ptr, ptr)")
@@ -186,6 +190,7 @@ func (c *Codegen) emitParagraph(para *parser.Paragraph) {
 	c.emit("entry:")
 	c.indent++
 	c.emitStatements(para.Statements)
+	c.emit("ret void")
 	c.indent--
 	c.indent--
 	c.emit("}")
@@ -230,8 +235,89 @@ func (c *Codegen) emitStatement(stmt parser.Statement) {
 		c.emitHttpRespond(s)
 	case *parser.StringStmt:
 		c.emitString(s)
+	case *parser.Accept:
+		c.emitAccept(s)
+	case *parser.Initialize:
+		c.emitInitialize(s)
 	case *parser.UnstringStmt:
 		c.emitUnstring(s)
+	}
+}
+
+func (c *Codegen) emitAccept(s *parser.Accept) {
+	name := sanitize(s.Name)
+	size := c.fieldSize(s.Name)
+
+	if c.isNumericField(s.Name) {
+		// Read string, convert to int
+		tmp := c.nextRegister()
+		c.emit("%%%s = alloca i8, i64 32", tmp)
+		in := c.nextRegister()
+		c.emit("%%%s = load ptr, ptr @stdin", in)
+		c.emit("call ptr @fgets(ptr %%%s, i32 31, ptr %%%s)", tmp, in)
+		val := c.nextRegister()
+		c.emit("%%%s = call i32 @atoi(ptr %%%s)", val, tmp)
+		c.emit("store i32 %%%s, ptr @%s", val, name)
+	} else {
+		// Read string directly into field
+		ptr := c.nextRegister()
+		sz := int64(size) + 1
+		c.emit("%%%s = getelementptr [%d x i8], ptr @%s, i64 0, i64 0", ptr, sz, name)
+		in := c.nextRegister()
+		c.emit("%%%s = load ptr, ptr @stdin", in)
+		c.emit("call ptr @fgets(ptr %%%s, i32 %d, ptr %%%s)", ptr, sz, in)
+
+		// Strip newline: scan and replace \n with space
+		nlLoop := c.nextLabel("accept.nl")
+		nlBody := c.nextLabel("accept.nlbody")
+		nlRep := c.nextLabel("accept.nlrep")
+		nlNext := c.nextLabel("accept.nlnext")
+		nlDone := c.nextLabel("accept.nldone")
+		idxReg := c.nextRegister()
+		c.emit("%%%s = alloca i32", idxReg)
+		c.emit("store i32 0, ptr %%%s", idxReg)
+		c.emit("br label %%%s", nlLoop)
+		c.emit("%s:", nlLoop)
+		idx := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", idx, idxReg)
+		chk := c.nextRegister()
+		c.emit("%%%s = icmp slt i32 %%%s, %d", chk, idx, size)
+		c.emit("br i1 %%%s, label %%%s, label %%%s", chk, nlBody, nlDone)
+		c.emit("%s:", nlBody)
+		cp := c.nextRegister()
+		c.emit("%%%s = getelementptr i8, ptr %%%s, i32 %%%s", cp, ptr, idx)
+		bv := c.nextRegister()
+		c.emit("%%%s = load i8, ptr %%%s", bv, cp)
+		isnl := c.nextRegister()
+		c.emit("%%%s = icmp eq i8 %%%s, 10", isnl, bv)
+		c.emit("br i1 %%%s, label %%%s, label %%%s", isnl, nlRep, nlNext)
+		c.emit("%s:", nlRep)
+		c.emit("store i8 32, ptr %%%s", cp)
+		c.emit("br label %%%s", nlDone)
+		c.emit("%s:", nlNext)
+		nxt := c.nextRegister()
+		c.emit("%%%s = add i32 %%%s, 1", nxt, idx)
+		c.emit("store i32 %%%s, ptr %%%s", nxt, idxReg)
+		c.emit("br label %%%s", nlLoop)
+		c.emit("%s:", nlDone)
+	}
+}
+
+func (c *Codegen) emitInitialize(s *parser.Initialize) {
+	for _, name := range s.Items {
+		size := c.fieldSize(name)
+		if c.isNumericField(name) {
+			c.emit("store i32 0, ptr @%s", sanitize(name))
+		} else {
+			buf := bytes.Repeat([]byte{32}, size) // spaces
+			cn := c.addStringConst(buf)
+			sz := int64(size)
+			c.emit("call void @llvm.memcpy.p0.p0.i64("+
+				"ptr align 1 getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0), "+
+				"ptr align 1 getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0), "+
+				"i64 %d, i1 false)",
+				sz+1, sanitize(name), sz+1, cn, sz)
+		}
 	}
 }
 
@@ -394,15 +480,6 @@ func (c *Codegen) emitStringWasm(s *parser.StringStmt) {
 
 		switch f.Delimiter.Type {
 		case parser.DelimBySize:
-			// Calculate max bytes we can copy (don't overflow dest)
-			avail := c.nextRegister()
-			c.emit("%%%s = sub i32 %d, %%%s", avail, destSize, pos0)
-			toCopy := c.nextRegister()
-			c.emit("%%%s = select i32 %d, i32 %%%s, i32 %%%s",
-				toCopy, srcSize)
-			// Actually simpler: just set overflow flag if pos+srcSize > destSize+1
-			// ... this is getting messy with select. Let me just emit the memcpy
-			// and let it overflow if needed (we check overflow at the end).
 			c.emit("call void @llvm.memcpy.p0.p0.i64(ptr %%%s, ptr %s, i64 %d, i1 false)",
 				destPtr, srcReg, int64(srcSize))
 			newPos := c.nextRegister()
@@ -410,29 +487,69 @@ func (c *Codegen) emitStringWasm(s *parser.StringStmt) {
 			c.emit("store i32 %%%s, ptr %%%s", newPos, posReg)
 
 		case parser.DelimBySpace:
-			// Scan source for space, copy bytes before it
+			// Copy source, scan for space byte-by-byte
 			scanLoop := c.nextLabel("str.scan")
+			scanBody := c.nextLabel("str.scanbody")
+			scanCopy := c.nextLabel("str.scancopy")
 			scanDone := c.nextLabel("str.scandone")
-			scanIdx := c.nextRegister()
-			c.emit("%%%s = alloca i32", scanIdx)
-			c.emit("store i32 0, ptr %%%s", scanIdx)
+			siReg := c.nextRegister()
+			c.emit("%%%s = alloca i32", siReg)
+			c.emit("store i32 0, ptr %%%s", siReg)
+			diReg := c.nextRegister()
+			c.emit("%%%s = alloca i32", diReg)
+			c.emit("store i32 0, ptr %%%s", diReg)
+
 			c.emit("br label %%%s", scanLoop)
 			c.emit("%s:", scanLoop)
+
 			si := c.nextRegister()
-			c.emit("%%%s = load i32, ptr %%%s", si, scanIdx)
-			sc := c.nextRegister()
-			c.emit("%%%s = icmp slt i32 %%%s, %d", sc, si, srcSize)
-			c.emit("br i1 %%%s, label %%%s, label %%%s", sc, scanDone, scanDone)
-			// Loop body would load byte, compare to space...
-			// This is getting too complex for inline IR.
-			// For now, fall back to full copy for WASM space-delimited case
-			c.emit("call void @llvm.memcpy.p0.p0.i64(ptr %%%s, ptr %s, i64 %d, i1 false)",
-				destPtr, srcReg, int64(srcSize))
-			newPos2 := c.nextRegister()
-			c.emit("%%%s = add i32 %%%s, %d", newPos2, curPos, srcSize)
-			c.emit("store i32 %%%s, ptr %%%s", newPos2, posReg)
-			c.emit("br label %%%s", scanDone)
+			c.emit("%%%s = load i32, ptr %%%s", si, siReg)
+			di := c.nextRegister()
+			c.emit("%%%s = load i32, ptr %%%s", di, diReg)
+
+			// Check bounds
+			sok := c.nextRegister()
+			c.emit("%%%s = icmp slt i32 %%%s, %d", sok, si, srcSize)
+			dok := c.nextRegister()
+			c.emit("%%%s = icmp slt i32 %%%s, %d", dok, di, destSize)
+			cont := c.nextRegister()
+			c.emit("%%%s = and i1 %%%s, %%%s", cont, sok, dok)
+			c.emit("br i1 %%%s, label %%%s, label %%%s", cont, scanBody, scanDone)
+
+			c.emit("%s:", scanBody)
+			// Load source byte
+			srcPtr := c.nextRegister()
+			c.emit("%%%s = getelementptr i8, ptr %s, i64 %%%s", srcPtr, srcReg, si)
+			bv := c.nextRegister()
+			c.emit("%%%s = load i8, ptr %%%s", bv, srcPtr)
+
+			// Check for space
+			isSp := c.nextRegister()
+			c.emit("%%%s = icmp eq i8 %%%s, 32", isSp, bv)
+			c.emit("br i1 %%%s, label %%%s, label %%%s", isSp, scanDone, scanCopy)
+
+			c.emit("%s:", scanCopy)
+			// Store to dest
+			dp := c.nextRegister()
+			c.emit("%%%s = getelementptr i8, ptr %%%s, i64 %%%s", dp, destPtr, di)
+			c.emit("store i8 %%%s, ptr %%%s", bv, dp)
+
+			// Advance source and dest indices
+			nsi := c.nextRegister()
+			c.emit("%%%s = add i32 %%%s, 1", nsi, si)
+			c.emit("store i32 %%%s, ptr %%%s", nsi, siReg)
+			ndi := c.nextRegister()
+			c.emit("%%%s = add i32 %%%s, 1", ndi, di)
+			c.emit("store i32 %%%s, ptr %%%s", ndi, diReg)
+			c.emit("br label %%%s", scanLoop)
 			c.emit("%s:", scanDone)
+
+			// Update position: advance past the bytes we copied + the space delimiter
+			sfinal := c.nextRegister()
+			c.emit("%%%s = load i32, ptr %%%s", sfinal, siReg)
+			ns := c.nextRegister()
+			c.emit("%%%s = add i32 %%%s, 2", ns, sfinal) // +1 for space itself
+			c.emit("store i32 %%%s, ptr %%%s", ns, posReg)
 
 		case parser.DelimByIdentifier:
 			// Full copy for now
@@ -445,11 +562,11 @@ func (c *Codegen) emitStringWasm(s *parser.StringStmt) {
 	}
 
 	// Space-pad remaining
-	fp := c.nextRegister()
-	c.emit("%%%s = load i32, ptr %%%s", fp, posReg)
-	c.emitStringSpacePad(destBase, destSize, fp)
+	c.emitStringSpacePad(destBase, destSize, posReg)
 
 	// Check overflow
+	fp := c.nextRegister()
+	c.emit("%%%s = load i32, ptr %%%s", fp, posReg)
 	chk := c.nextRegister()
 	c.emit("%%%s = icmp sgt i32 %%%s, %d", chk, fp, destSize)
 	ovf := c.nextRegister()
@@ -466,14 +583,14 @@ func (c *Codegen) emitStringWasm(s *parser.StringStmt) {
 	c.emitStringOverflow(s, ovfReg)
 }
 
-func (c *Codegen) emitStringSpacePad(destBase string, destSize int32, posReg string) {
+func (c *Codegen) emitStringSpacePad(destBase string, destSize int32, posAlloca string) {
 	padDone := c.nextLabel("str.padend")
 	padLoop := c.nextLabel("str.padloop")
 	padIdx := c.nextRegister()
 	c.emit("%%%s = alloca i32", padIdx)
 	// padIdx = pos (1-indexed), convert to 0-indexed
 	pi := c.nextRegister()
-	c.emit("%%%s = load i32, ptr %%%s", pi, posReg)
+	c.emit("%%%s = load i32, ptr %%%s", pi, posAlloca)
 	pi0 := c.nextRegister()
 	c.emit("%%%s = sub i32 %%%s, 1", pi0, pi)
 	c.emit("store i32 %%%s, ptr %%%s", pi0, padIdx)
@@ -498,6 +615,11 @@ func (c *Codegen) emitStringSpacePad(destBase string, destSize int32, posReg str
 }
 
 func (c *Codegen) emitUnstring(s *parser.UnstringStmt) {
+	if c.isWasm {
+		c.emitUnstringWasm(s)
+		return
+	}
+
 	srcReg := c.emitExprPtr(s.Source)
 	srcSize := c.exprValueSize(s.Source)
 
@@ -601,6 +723,10 @@ func (c *Codegen) emitUnstring(s *parser.UnstringStmt) {
 		c.emit("store i32 %%%s, ptr @%s", talVal, talName)
 	}
 
+	c.emitUnstringOverflow(s, overflowAlloca)
+}
+
+func (c *Codegen) emitUnstringOverflow(s *parser.UnstringStmt, overflowAlloca string) {
 	if len(s.OnOverflow) > 0 || len(s.NotOnOverflow) > 0 {
 		labelOverflow := c.nextLabel("unstring.overflow")
 		labelNoOverflow := c.nextLabel("unstring.nooverflow")
@@ -625,6 +751,165 @@ func (c *Codegen) emitUnstring(s *parser.UnstringStmt) {
 
 		c.emit("%s:", labelEnd)
 	}
+}
+
+func (c *Codegen) emitUnstringWasm(s *parser.UnstringStmt) {
+	srcReg := c.emitExprPtr(s.Source)
+	srcSize32 := int32(c.exprValueSize(s.Source))
+
+	// alloca for source position (0-indexed)
+	posReg := c.nextRegister()
+	c.emit("%%%s = alloca i32", posReg)
+	if s.Pointer != "" {
+		pn := sanitize(s.Pointer)
+		pv := c.nextRegister()
+		c.emit("%%%s = load i32, ptr @%s", pv, pn)
+		// Convert 1-indexed to 0-indexed
+		p0 := c.nextRegister()
+		c.emit("%%%s = sub i32 %%%s, 1", p0, pv)
+		c.emit("store i32 %%%s, ptr %%%s", p0, posReg)
+	} else {
+		c.emit("store i32 0, ptr %%%s", posReg)
+	}
+
+	// alloca for overflow, tally
+	ovfReg := c.nextRegister()
+	c.emit("%%%s = alloca i32", ovfReg)
+	c.emit("store i32 0, ptr %%%s", ovfReg)
+
+	var talReg string
+	if s.Tallying != "" {
+		talReg = c.nextRegister()
+		c.emit("%%%s = alloca i32", talReg)
+		c.emit("store i32 0, ptr %%%s", talReg)
+	}
+
+	for idx, f := range s.Into {
+		if idx > 0 {
+			// Advance past delimiter
+			cp := c.nextRegister()
+			c.emit("%%%s = load i32, ptr %%%s", cp, posReg)
+			np := c.nextRegister()
+			c.emit("%%%s = add i32 %%%s, 1", np, cp)
+			c.emit("store i32 %%%s, ptr %%%s", np, posReg)
+		}
+
+		destName := sanitize(f.Destination)
+		destSize32 := int32(c.fieldSize(f.Destination))
+
+		// Scan from current position for space or end
+		destBase := c.nextRegister()
+		dsz := int64(c.fieldSize(f.Destination)) + 1
+		c.emit("%%%s = getelementptr [%d x i8], ptr @%s, i64 0, i64 0", destBase, dsz, destName)
+
+		scanLoop := c.nextLabel("unstr.scan")
+		scanBody := c.nextLabel("unstr.scanbody")
+		scanCopy := c.nextLabel("unstr.scancopy")
+		scanDone := c.nextLabel("unstr.scandone")
+
+		// Copy bytes from src+pos to dest until space or src end
+		cpReg := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", cpReg, posReg)
+
+		// dest write index
+		diReg := c.nextRegister()
+		c.emit("%%%s = alloca i32", diReg)
+		c.emit("store i32 0, ptr %%%s", diReg)
+
+		c.emit("br label %%%s", scanLoop)
+		c.emit("%s:", scanLoop)
+
+		cp2 := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", cp2, posReg)
+		di2 := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", di2, diReg)
+
+		// Check if source position is within bounds
+		inBounds := c.nextRegister()
+		c.emit("%%%s = icmp slt i32 %%%s, %d", inBounds, cp2, srcSize32)
+		// Check if dest is within bounds
+		destOk := c.nextRegister()
+		c.emit("%%%s = icmp slt i32 %%%s, %d", destOk, di2, destSize32)
+		cont := c.nextRegister()
+		c.emit("%%%s = and i1 %%%s, %%%s", cont, inBounds, destOk)
+		c.emit("br i1 %%%s, label %%%s, label %%%s", cont, scanBody, scanDone)
+
+		c.emit("%s:", scanBody)
+		// Load source byte
+		srcBytePtr := c.nextRegister()
+		c.emit("%%%s = getelementptr i8, ptr %s, i32 %%%s", srcBytePtr, srcReg, cp2)
+		sb := c.nextRegister()
+		c.emit("%%%s = load i8, ptr %%%s", sb, srcBytePtr)
+
+		// Check if space
+		isSpace := c.nextRegister()
+		c.emit("%%%s = icmp eq i8 %%%s, 32", isSpace, sb)
+		c.emit("br i1 %%%s, label %%%s, label %%%s", isSpace, scanDone, scanCopy)
+
+		c.emit("%s:", scanCopy)
+		// Store byte to dest
+		destPtr := c.nextRegister()
+		c.emit("%%%s = getelementptr i8, ptr %%%s, i32 %%%s", destPtr, destBase, di2)
+		c.emit("store i8 %%%s, ptr %%%s", sb, destPtr)
+
+		// Advance positions
+		np2 := c.nextRegister()
+		c.emit("%%%s = add i32 %%%s, 1", np2, cp2)
+		c.emit("store i32 %%%s, ptr %%%s", np2, posReg)
+		nd := c.nextRegister()
+		c.emit("%%%s = add i32 %%%s, 1", nd, di2)
+		c.emit("store i32 %%%s, ptr %%%s", nd, diReg)
+		c.emit("br label %%%s", scanLoop)
+		c.emit("%s:", scanDone)
+
+		// Store count if COUNT IN
+		if f.CountIn != "" {
+			cntName := sanitize(f.CountIn)
+			di3 := c.nextRegister()
+			c.emit("%%%s = load i32, ptr %%%s", di3, diReg)
+			c.emit("store i32 %%%s, ptr @%s", di3, cntName)
+		}
+
+		// Space-fill remaining dest
+		padLoop := c.nextLabel("unstr.padloop")
+		padBody := c.nextLabel("unstr.padbody")
+		padDone := c.nextLabel("unstr.padend")
+		c.emit("br label %%%s", padLoop)
+		c.emit("%s:", padLoop)
+		di4 := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", di4, diReg)
+		padOk := c.nextRegister()
+		c.emit("%%%s = icmp slt i32 %%%s, %d", padOk, di4, destSize32)
+		c.emit("br i1 %%%s, label %%%s, label %%%s", padOk, padBody, padDone)
+		c.emit("%s:", padBody)
+		pp := c.nextRegister()
+		c.emit("%%%s = getelementptr i8, ptr %%%s, i32 %%%s", pp, destBase, di4)
+		c.emit("store i8 32, ptr %%%s", pp)
+		nd2 := c.nextRegister()
+		c.emit("%%%s = add i32 %%%s, 1", nd2, di4)
+		c.emit("store i32 %%%s, ptr %%%s", nd2, diReg)
+		c.emit("br label %%%s", padLoop)
+		c.emit("%s:", padDone)
+	}
+
+	// Store back pointer (convert 0-indexed to 1-indexed)
+	if s.Pointer != "" {
+		pn := sanitize(s.Pointer)
+		cp := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", cp, posReg)
+		cp1 := c.nextRegister()
+		c.emit("%%%s = add i32 %%%s, 1", cp1, cp)
+		c.emit("store i32 %%%s, ptr @%s", cp1, pn)
+	}
+
+	if s.Tallying != "" {
+		tn := sanitize(s.Tallying)
+		tv := c.nextRegister()
+		c.emit("%%%s = load i32, ptr %%%s", tv, talReg)
+		c.emit("store i32 %%%s, ptr @%s", tv, tn)
+	}
+
+	c.emitUnstringOverflow(s, ovfReg)
 }
 
 func (c *Codegen) emitMove(s *parser.Move) {
@@ -707,12 +992,10 @@ func (c *Codegen) emitExpr(expr parser.Expression) string {
 
 		case parser.OpEq:
 			// String comparison: use cob_picx_eq if either operand is a string
-			_, leftIsStr := e.Left.(*parser.IdentifierExpr)
-			_, rightIsStr := e.Right.(*parser.IdentifierExpr)
-			_, leftIsLit := e.Left.(*parser.StringLiteralExpr)
-			_, rightIsLit := e.Right.(*parser.StringLiteralExpr)
+			leftIsString := c.isStringExpr(e.Left)
+			rightIsString := c.isStringExpr(e.Right)
 
-			if leftIsStr || rightIsStr || leftIsLit || rightIsLit {
+			if leftIsString || rightIsString {
 				leftPtr := c.emitExprPtr(e.Left)
 				rightPtr := c.emitExprPtr(e.Right)
 				leftSize := c.exprSize(e.Left)
@@ -738,8 +1021,37 @@ func (c *Codegen) emitPerform(s *parser.Perform) {
 		c.emitPerformVarying(s)
 		return
 	}
+	if s.Until != nil {
+		c.emitPerformUntil(s)
+		return
+	}
 	name := sanitize(s.Paragraph)
 	c.emit("call void @%s()", name)
+}
+
+func (c *Codegen) emitPerformUntil(s *parser.Perform) {
+	labelCond := c.nextLabel("perf.cond")
+	labelBody := c.nextLabel("perf.body")
+	labelEnd := c.nextLabel("perf.end")
+
+	c.emit("br label %%%s", labelCond)
+
+	// Condition check
+	c.emit("%s:", labelCond)
+	c.indent++
+	condVal := c.emitExpr(s.Until)
+	c.emit("%%perf_done = icmp ne i32 %s, 0", condVal)
+	c.emit("br i1 %%perf_done, label %%%s, label %%%s", labelEnd, labelBody)
+	c.indent--
+
+	// Loop body
+	c.emit("%s:", labelBody)
+	c.indent++
+	c.emitStatements(s.Body)
+	c.emit("br label %%%s", labelCond)
+	c.indent--
+
+	c.emit("%s:", labelEnd)
 }
 
 func (c *Codegen) emitPerformVarying(s *parser.Perform) {
@@ -783,12 +1095,13 @@ func (c *Codegen) emitPerformVarying(s *parser.Perform) {
 
 func (c *Codegen) emitIf(s *parser.If) {
 	cond := c.emitExpr(s.Condition)
+	cmpReg := c.nextRegister()
 	labelThen := c.nextLabel("if.then")
 	labelElse := c.nextLabel("if.else")
 	labelMerge := c.nextLabel("if.end")
 
-	c.emit("%%cmp = icmp ne i32 %s, 0", cond)
-	c.emit("br i1 %%cmp, label %%%s, label %%%s", labelThen, labelElse)
+	c.emit("%%%s = icmp ne i32 %s, 0", cmpReg, cond)
+	c.emit("br i1 %%%s, label %%%s, label %%%s", cmpReg, labelThen, labelElse)
 
 	c.emit("%s:", labelThen)
 	c.indent++
@@ -806,15 +1119,29 @@ func (c *Codegen) emitIf(s *parser.If) {
 }
 
 func (c *Codegen) emitEvaluate(s *parser.Evaluate) {
-	subject := c.emitExpr(s.Subject)
 	labelEnd := c.nextLabel("eval.end")
+
+	isStringEval := c.isStringExpr(s.Subject)
 
 	for i, wc := range s.WhenClauses {
 		labelNext := c.nextLabel("eval.next")
 		labelBody := c.nextLabel("eval.body")
 
-		whenVal := c.emitExpr(wc.Values[0])
-		c.emit("%%cmp%d = icmp eq i32 %s, %s", i, subject, whenVal)
+		if isStringEval {
+			// String comparison via cob_picx_eq
+			leftPtr := c.emitExprPtr(s.Subject)
+			rightPtr := c.emitExprPtr(wc.Values[0])
+			leftSize := c.exprSize(s.Subject)
+			tmp := c.nextRegister()
+			c.emit("%%%s = call i32 @cob_picx_eq(ptr %s, i64 %d, ptr %s)",
+				tmp, leftPtr, leftSize, rightPtr)
+			c.emit("%%cmp%d = icmp ne i32 %%%s, 0", i, tmp)
+		} else {
+			// Numeric comparison
+			subject := c.emitExpr(s.Subject)
+			whenVal := c.emitExpr(wc.Values[0])
+			c.emit("%%cmp%d = icmp eq i32 %s, %s", i, subject, whenVal)
+		}
 		c.emit("br i1 %%cmp%d, label %%%s, label %%%s", i, labelBody, labelNext)
 
 		c.emit("%s:", labelBody)
@@ -1233,6 +1560,17 @@ func findFieldType(name string, items []*parser.DataItem) bool {
 		}
 	}
 	return false
+}
+
+func (c *Codegen) isStringExpr(expr parser.Expression) bool {
+	switch e := expr.(type) {
+	case *parser.StringLiteralExpr:
+		return true
+	case *parser.IdentifierExpr:
+		return !c.isNumericField(e.Name)
+	default:
+		return false
+	}
 }
 
 func findFieldSize(name string, items []*parser.DataItem) int {

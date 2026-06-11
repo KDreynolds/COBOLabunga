@@ -36,6 +36,8 @@ const (
 	END_EVALUATE
 	STOP
 	RUN
+	INITIALIZE
+	ACCEPT
 
 	// PERFORM modifiers
 	VARYING
@@ -132,6 +134,8 @@ var tokenNames = map[TokenType]string{
 	END_EVALUATE:    "END-EVALUATE",
 	STOP:            "STOP",
 	RUN:             "RUN",
+	INITIALIZE:      "INITIALIZE",
+	ACCEPT:          "ACCEPT",
 	HTTP_GET:        "HTTP-GET",
 	HTTP_POST:       "HTTP-POST",
 	HTTP_PUT:        "HTTP-PUT",

@@ -111,10 +111,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: HTTP features not supported in WASM target\n")
 			os.Exit(1)
 		}
-		if usesStringRuntime(prog) {
-			fmt.Fprintf(os.Stderr, "Error: STRING/UNSTRING not supported in WASM target yet\n")
-			os.Exit(1)
-		}
 		cmd := exec.Command("clang", "--target=wasm32-wasip1",
 			"--sysroot=/usr/share/wasi-sysroot",
 			"-o", exeName, objName)
@@ -135,7 +131,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "runtime build error: %v\n%s\n", err, out)
 				os.Exit(1)
 			}
-			cmd := exec.Command("clang", "-no-pie", "-o", exeName, objName, runtimeLib)
+			cmd := exec.Command("clang", "-no-pie", "-o", exeName, objName, "-Wl,--whole-archive", runtimeLib, "-Wl,--no-whole-archive")
 			if out, err := cmd.CombinedOutput(); err != nil {
 				fmt.Fprintf(os.Stderr, "clang error: %v\n%s\n", err, out)
 				os.Exit(1)

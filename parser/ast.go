@@ -88,6 +88,7 @@ type Perform struct {
 	Paragraph string
 	Times     Expression
 	Varying   *VaryingPhrase
+	Until     Expression
 	Body      []Statement
 	Line      int
 	Col       int
@@ -112,6 +113,18 @@ type Evaluate struct {
 type WhenClause struct {
 	Values []Expression
 	Body   []Statement
+}
+
+type Accept struct {
+	Name string
+	Line int
+	Col  int
+}
+
+type Initialize struct {
+	Items []string
+	Line  int
+	Col   int
 }
 
 type StopRun struct {
@@ -266,6 +279,8 @@ func (*Display) stmtTag()     {}
 func (*Perform) stmtTag()     {}
 func (*If) stmtTag()          {}
 func (*Evaluate) stmtTag()    {}
+func (*Accept) stmtTag()      {}
+func (*Initialize) stmtTag()  {}
 func (*StopRun) stmtTag()     {}
 func (*StringStmt) stmtTag()  {}
 func (*UnstringStmt) stmtTag() {}
@@ -281,6 +296,8 @@ func (*HttpRespond) stmtTag() {}
 
 type Expression interface {
 	exprTag()
+	ExprLine() int
+	ExprCol() int
 }
 
 type IdentifierExpr struct {
@@ -317,10 +334,19 @@ const (
 	OpLe
 )
 
-func (*IdentifierExpr) exprTag()     {}
-func (*IntegerLiteralExpr) exprTag() {}
-func (*StringLiteralExpr) exprTag()  {}
-func (*BinaryExpr) exprTag()         {}
+func (e *IdentifierExpr) exprTag()     {}
+func (e *IntegerLiteralExpr) exprTag() {}
+func (e *StringLiteralExpr) exprTag()  {}
+func (e *BinaryExpr) exprTag()         {}
+
+func (e *IdentifierExpr) ExprLine() int     { return e.Line }
+func (e *IdentifierExpr) ExprCol() int      { return e.Column }
+func (e *IntegerLiteralExpr) ExprLine() int { return 0 }
+func (e *IntegerLiteralExpr) ExprCol() int  { return 0 }
+func (e *StringLiteralExpr) ExprLine() int  { return 0 }
+func (e *StringLiteralExpr) ExprCol() int   { return 0 }
+func (e *BinaryExpr) ExprLine() int         { return e.Left.ExprLine() }
+func (e *BinaryExpr) ExprCol() int          { return e.Left.ExprCol() }
 
 // --- AST Debug Printer ---
 
@@ -428,6 +454,14 @@ func printStatement(stmt Statement, indent int) {
 			}
 		}
 		fmt.Printf("%sEND-EVALUATE\n", prefix)
+	case *Accept:
+		fmt.Printf("%sACCEPT %s\n", prefix, s.Name)
+	case *Initialize:
+		fmt.Printf("%sINITIALIZE", prefix)
+		for _, item := range s.Items {
+			fmt.Printf(" %s", item)
+		}
+		fmt.Println()
 	case *StopRun:
 		fmt.Printf("%sSTOP RUN\n", prefix)
 	case *HttpGet:
