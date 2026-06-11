@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"unicode"
 
 	"github.com/KDreynolds/COBOLabunga/lexer"
 )
@@ -206,8 +207,11 @@ func (p *Parser) parseDataItem() *DataItem {
 	}
 	item.Level = level
 
-	// Name
-	if p.peek().Type == lexer.IDENTIFIER {
+	// Name — accept any word-like token (COBOL allows reserved words as data names)
+	tok = p.peek()
+	if tok.Type == lexer.IDENTIFIER || (tok.Type != lexer.INTEGER_LITERAL &&
+		tok.Type != lexer.PERIOD && tok.Type != lexer.EOF && tok.Literal != "" &&
+		unicode.IsLetter(rune(tok.Literal[0]))) {
 		item.Name = p.advance().Literal
 	} else {
 		p.error("expected data item name")
@@ -401,7 +405,8 @@ func (p *Parser) isStatementStart() bool {
 	case lexer.MOVE, lexer.COMPUTE, lexer.DISPLAY, lexer.PERFORM,
 		lexer.IF, lexer.EVALUATE, lexer.STOP,
 		lexer.HTTP_GET, lexer.HTTP_POST, lexer.HTTP_PUT,
-		lexer.HTTP_PATCH, lexer.HTTP_DELETE:
+		lexer.HTTP_PATCH, lexer.HTTP_DELETE,
+		lexer.HTTP_LISTEN, lexer.HTTP_RESPOND:
 		return true
 	}
 	return false
@@ -437,6 +442,10 @@ func (p *Parser) parseStatement() Statement {
 		return p.parseHttpPatchStatement()
 	case lexer.HTTP_DELETE:
 		return p.parseHttpDeleteStatement()
+	case lexer.HTTP_LISTEN:
+		return p.parseHttpListenStatement()
+	case lexer.HTTP_RESPOND:
+		return p.parseHttpRespondStatement()
 	default:
 		p.error("unexpected token in statement: " + p.peek().Literal)
 		p.advance()
@@ -767,27 +776,30 @@ func (p *Parser) parseHttpCommon(stmt interface{}) {
 					s.Mapping = &name
 				}
 			}
-		case lexer.HEADERS:
-			p.advance()
-			hp := &HeadersPhrase{}
+	case lexer.HEADERS:
+		p.advance()
+		hp := &HeadersPhrase{}
+		if p.match(lexer.IDENTIFIER) {
+			name := p.previous().Literal
 			if p.match(lexer.IDENTIFIER) {
-				hp.Count = p.previous().Literal
-			}
-			if p.match(lexer.IDENTIFIER) {
+				hp.Count = name
 				hp.Group = p.previous().Literal
+			} else {
+				hp.Group = name
 			}
-			switch s := stmt.(type) {
-			case *HttpPost:
-				s.Headers = hp
-			case *HttpPut:
-				s.Headers = hp
-			case *HttpPatch:
-				s.Headers = hp
-			case *HttpGet:
-				s.Headers = hp
-			case *HttpDelete:
-				s.Headers = hp
-			}
+		}
+		switch s := stmt.(type) {
+		case *HttpPost:
+			s.Headers = hp
+		case *HttpPut:
+			s.Headers = hp
+		case *HttpPatch:
+			s.Headers = hp
+		case *HttpGet:
+			s.Headers = hp
+		case *HttpDelete:
+			s.Headers = hp
+		}
 		case lexer.GIVING:
 			p.advance()
 			if p.peek().Type == lexer.IDENTIFIER {
@@ -881,10 +893,13 @@ func (p *Parser) parseHttpCommonPost(stmt *HttpGet, _ bool) {
 			p.advance()
 			hp := &HeadersPhrase{}
 			if p.match(lexer.IDENTIFIER) {
-				hp.Count = p.previous().Literal
-			}
-			if p.match(lexer.IDENTIFIER) {
-				hp.Group = p.previous().Literal
+				name := p.previous().Literal
+				if p.match(lexer.IDENTIFIER) {
+					hp.Count = name
+					hp.Group = p.previous().Literal
+				} else {
+					hp.Group = name
+				}
 			}
 			stmt.Headers = hp
 		case lexer.GIVING:
@@ -930,10 +945,13 @@ func (p *Parser) parseHttpCommonDelete(stmt *HttpDelete) {
 			p.advance()
 			hp := &HeadersPhrase{}
 			if p.match(lexer.IDENTIFIER) {
-				hp.Count = p.previous().Literal
-			}
-			if p.match(lexer.IDENTIFIER) {
-				hp.Group = p.previous().Literal
+				name := p.previous().Literal
+				if p.match(lexer.IDENTIFIER) {
+					hp.Count = name
+					hp.Group = p.previous().Literal
+				} else {
+					hp.Group = name
+				}
 			}
 			stmt.Headers = hp
 		case lexer.GIVING:
@@ -964,6 +982,139 @@ func (p *Parser) parseHttpCommonDelete(stmt *HttpDelete) {
 			return
 		}
 	}
+}
+
+func (p *Parser) parseHttpListenStatement() *HttpListen {
+	tok := p.advance() // consume HTTP-LISTEN
+	stmt := &HttpListen{Line: tok.Line, Col: tok.Column}
+
+	for !p.atEnd() {
+		switch p.peek().Type {
+		case lexer.PORT:
+			p.advance()
+			if p.peek().Type == lexer.INTEGER_LITERAL {
+				valTok := p.advance()
+				stmt.Port, _ = strconv.Atoi(valTok.Literal)
+			} else {
+				p.error("expected port number after PORT")
+			}
+		case lexer.MAPPING:
+			p.advance()
+			if p.peek().Type == lexer.IDENTIFIER {
+				name := p.advance().Literal
+				stmt.Mapping = &name
+			}
+		case lexer.HEADERS:
+			p.advance()
+			hp := &HeadersPhrase{}
+			if p.match(lexer.IDENTIFIER) {
+				name := p.previous().Literal
+				if p.match(lexer.IDENTIFIER) {
+					hp.Count = name
+					hp.Group = p.previous().Literal
+				} else {
+					hp.Group = name
+				}
+			}
+			stmt.Headers = hp
+		case lexer.STATUS:
+			p.advance()
+			if p.peek().Type == lexer.IDENTIFIER {
+				stmt.Status = p.advance().Literal
+			}
+		case lexer.NOT:
+			p.advance()
+			if p.match(lexer.ON) {
+				if p.match(lexer.EXCEPTION) {
+					stmt.NotOnException = p.parseStatementsUntil(lexer.ON, lexer.END_HTTP)
+				}
+			}
+		case lexer.ON:
+			p.advance()
+			if p.match(lexer.EXCEPTION) {
+				stmt.OnException = p.parseStatementsUntil(lexer.NOT, lexer.END_HTTP)
+			}
+			if p.match(lexer.NOT) {
+				if p.match(lexer.EXCEPTION) {
+					stmt.NotOnException = p.parseStatementsUntil(lexer.END_HTTP)
+				}
+			}
+		case lexer.END_HTTP:
+			p.advance()
+			return stmt
+		default:
+			return stmt
+		}
+	}
+
+	return stmt
+}
+
+func (p *Parser) parseHttpRespondStatement() *HttpRespond {
+	tok := p.advance() // consume HTTP-RESPOND
+	stmt := &HttpRespond{Line: tok.Line, Col: tok.Column}
+
+	for !p.atEnd() {
+		switch p.peek().Type {
+		case lexer.STATUS:
+			p.advance()
+			if p.peek().Type == lexer.INTEGER_LITERAL {
+				valTok := p.advance()
+				stmt.Status, _ = strconv.Atoi(valTok.Literal)
+			} else {
+				p.error("expected status code after STATUS")
+			}
+		case lexer.BODY:
+			p.advance()
+			stmt.Body = p.parseExpression()
+		case lexer.CONTENT_TYPE:
+			p.advance()
+			stmt.ContentType = p.parseExpression()
+		case lexer.HEADERS:
+			p.advance()
+			hp := &HeadersPhrase{}
+			if p.match(lexer.IDENTIFIER) {
+				name := p.previous().Literal
+				if p.match(lexer.IDENTIFIER) {
+					hp.Count = name
+					hp.Group = p.previous().Literal
+				} else {
+					hp.Group = name
+				}
+			}
+			stmt.Headers = hp
+		case lexer.MAPPING:
+			p.advance()
+			if p.peek().Type == lexer.IDENTIFIER {
+				name := p.advance().Literal
+				stmt.Mapping = &name
+			}
+		case lexer.NOT:
+			p.advance()
+			if p.match(lexer.ON) {
+				if p.match(lexer.EXCEPTION) {
+					stmt.NotOnException = p.parseStatementsUntil(lexer.ON, lexer.END_HTTP)
+				}
+			}
+		case lexer.ON:
+			p.advance()
+			if p.match(lexer.EXCEPTION) {
+				stmt.OnException = p.parseStatementsUntil(lexer.NOT, lexer.END_HTTP)
+			}
+			if p.match(lexer.NOT) {
+				if p.match(lexer.EXCEPTION) {
+					stmt.NotOnException = p.parseStatementsUntil(lexer.ON, lexer.END_HTTP)
+				}
+			}
+		case lexer.END_HTTP:
+			p.advance()
+			return stmt
+		default:
+			return stmt
+		}
+	}
+
+	return stmt
 }
 
 // --- Expression parsing ---

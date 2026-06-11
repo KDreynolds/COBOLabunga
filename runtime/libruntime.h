@@ -87,6 +87,11 @@ extern int cob_http_patch(char* url, char* body, char* response, long int respon
 extern int cob_http_delete(char* url, char* response, long int responseCap, long int* responseLen, int* statusCode);
 extern int cob_json_str(char* body, long int bodyLen, char* fieldName, char* out, long int outSize);
 extern int cob_json_int(char* body, long int bodyLen, char* fieldName, int* out);
+extern int cob_http_listen(int port, int* statusCode);
+extern int cob_http_respond_set_header(char* name, char* val, long int valSize);
+extern int cob_http_respond(int status, char* body, char* contentType);
+extern int cob_http_request_field(char* fieldName, char* out, long int outSize);
+extern int cob_picx_eq(char* a, long int aSize, char* b);
 
 #ifdef __cplusplus
 }

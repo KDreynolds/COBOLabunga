@@ -16,6 +16,30 @@ import (
 	"unsafe"
 )
 
+type httpRequest struct {
+	method      string
+	path        string
+	body        string
+	contentType string
+	headers     map[string]string
+	respC       chan *httpResponse
+}
+
+type httpResponse struct {
+	status      int
+	body        string
+	contentType string
+	headers     map[string]string
+}
+
+var (
+	requestCh      = make(chan *httpRequest, 1)
+	handlerDoneCh  = make(chan struct{}, 1)
+	currentReq     *httpRequest
+	listenSrv      *http.Server
+	pendingHeaders map[string]string
+)
+
 func httpClient() *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
@@ -195,6 +219,162 @@ func cob_json_int(body *C.char, bodyLen C.long, fieldName *C.char, out *C.int) C
 		return 0
 	}
 	return 1
+}
+
+//export cob_http_listen
+func cob_http_listen(port C.int, statusCode *C.int) C.int {
+	// Close previous server if any (handler is done since cob_http_respond was called)
+	if listenSrv != nil {
+		listenSrv.Close()
+		listenSrv = nil
+	}
+	listenSrv = &http.Server{
+		Addr: fmt.Sprintf(":%d", int(port)),
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+			req := &httpRequest{
+				method:      r.Method,
+				path:        r.URL.Path,
+				body:        string(body),
+				contentType: r.Header.Get("Content-Type"),
+				headers:     make(map[string]string),
+				respC:       make(chan *httpResponse, 1),
+			}
+			for k := range r.Header {
+				req.headers[k] = r.Header.Get(k)
+			}
+			requestCh <- req
+
+			resp := <-req.respC
+			for k, v := range resp.headers {
+				w.Header().Set(k, v)
+			}
+			if resp.contentType != "" {
+				w.Header().Set("Content-Type", resp.contentType)
+			}
+			w.WriteHeader(resp.status)
+			w.Write([]byte(resp.body))
+			handlerDoneCh <- struct{}{}
+		}),
+	}
+
+	go listenSrv.ListenAndServe()
+
+	currentReq = <-requestCh
+
+	if statusCode != nil {
+		*statusCode = 0
+	}
+
+	return 0
+}
+
+//export cob_http_respond_set_header
+func cob_http_respond_set_header(name *C.char, val *C.char, valSize C.long) C.int {
+	if pendingHeaders == nil {
+		pendingHeaders = make(map[string]string)
+	}
+	n := C.GoString(name)
+	v := strings.TrimRight(C.GoString(val), " \t")
+	if v == "" {
+		delete(pendingHeaders, n)
+	} else {
+		pendingHeaders[n] = v
+	}
+	return 0
+}
+
+//export cob_http_respond
+func cob_http_respond(status C.int, body *C.char, contentType *C.char) C.int {
+	req := currentReq
+	if req == nil {
+		return 1
+	}
+
+	resp := &httpResponse{
+		status:  int(status),
+		headers: pendingHeaders,
+	}
+	pendingHeaders = nil
+	if body != nil {
+		resp.body = C.GoString(body)
+	}
+	if contentType != nil {
+		resp.contentType = C.GoString(contentType)
+	}
+
+	req.respC <- resp
+
+	// Wait for handler to finish writing the HTTP response
+	<-handlerDoneCh
+
+	if listenSrv != nil {
+		listenSrv.Close()
+		listenSrv = nil
+	}
+
+	return 0
+}
+
+//export cob_http_request_field
+func cob_http_request_field(fieldName *C.char, out *C.char, outSize C.long) C.int {
+	req := currentReq
+	if req == nil {
+		return 1
+	}
+
+	rawName := C.GoString(fieldName)
+	name := jsonKey(rawName)
+	var val string
+
+	// Use suffix matching so REQ-METHOD, REQ-PATH, REQ-BODY, REQUEST-BODY,
+	// RESP-CONTENT-TYPE etc. all match the built-in properties.
+	switch {
+	case strings.HasSuffix(name, "method"):
+		val = req.method
+	case strings.HasSuffix(name, "path"):
+		val = req.path
+	case strings.HasSuffix(name, "body"):
+		val = req.body
+	case strings.HasSuffix(name, "contenttype"):
+		val = req.contentType
+	default:
+		// Fall through to request headers
+		if req.headers != nil {
+			for hk, hv := range req.headers {
+				if jsonKey(hk) == name {
+					val = hv
+					break
+				}
+			}
+		}
+		if val == "" {
+			return 1
+		}
+	}
+
+	if out != nil && outSize > 0 {
+		size := int(outSize)
+		buf := make([]byte, size)
+		copy(buf, val)
+		for i := len(val); i < size; i++ {
+			buf[i] = ' '
+		}
+		C.memcpy(unsafe.Pointer(out), unsafe.Pointer(&buf[0]), C.size_t(size))
+	}
+	return 0
+}
+
+//export cob_picx_eq
+func cob_picx_eq(a *C.char, aSize C.long, b *C.char) C.int {
+	aStr := C.GoBytes(unsafe.Pointer(a), C.int(aSize))
+	bStr := C.GoString(b)
+	aTrimmed := strings.TrimRight(string(aStr), " ")
+	if aTrimmed == bStr {
+		return 1
+	}
+	return 0
 }
 
 func main() {}

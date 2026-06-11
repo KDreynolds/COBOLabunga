@@ -50,11 +50,16 @@ const (
 	HTTP_PUT
 	HTTP_PATCH
 	HTTP_DELETE
+	HTTP_LISTEN
+	HTTP_RESPOND
+	PORT
 	GIVING
 	SENDING
 	STATUS
 	HEADERS
 	MAPPING
+	BODY
+	CONTENT_TYPE
 	ON
 	EXCEPTION
 	NOT
@@ -113,11 +118,16 @@ var tokenNames = map[TokenType]string{
 	HTTP_PUT:        "HTTP-PUT",
 	HTTP_PATCH:      "HTTP-PATCH",
 	HTTP_DELETE:     "HTTP-DELETE",
+	HTTP_LISTEN:     "HTTP-LISTEN",
+	HTTP_RESPOND:    "HTTP-RESPOND",
+	PORT:            "PORT",
 	GIVING:          "GIVING",
 	SENDING:         "SENDING",
 	STATUS:          "STATUS",
 	HEADERS:         "HEADERS",
 	MAPPING:         "MAPPING",
+	BODY:            "BODY",
+	CONTENT_TYPE:    "CONTENT-TYPE",
 	ON:              "ON",
 	EXCEPTION:       "EXCEPTION",
 	NOT:             "NOT",

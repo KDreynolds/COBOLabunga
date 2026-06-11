@@ -42,6 +42,11 @@ func (c *Codegen) Generate() string {
 	c.emit("declare i32 @cob_http_delete(ptr, ptr, i64, ptr, ptr)")
 	c.emit("declare i32 @cob_json_str(ptr, i64, ptr, ptr, i64)")
 	c.emit("declare i32 @cob_json_int(ptr, i64, ptr, ptr)")
+	c.emit("declare i32 @cob_http_listen(i32, ptr)")
+	c.emit("declare i32 @cob_http_respond(i32, ptr, ptr)")
+	c.emit("declare i32 @cob_http_respond_set_header(ptr, ptr, i64)")
+	c.emit("declare i32 @cob_http_request_field(ptr, ptr, i64)")
+	c.emit("declare i32 @cob_picx_eq(ptr, i64, ptr)")
 	c.emit("")
 
 	c.emitWorkingStorage()
@@ -199,6 +204,10 @@ func (c *Codegen) emitStatement(stmt parser.Statement) {
 		c.emitHttpPatch(s)
 	case *parser.HttpDelete:
 		c.emitHttpDelete(s)
+	case *parser.HttpListen:
+		c.emitHttpListen(s)
+	case *parser.HttpRespond:
+		c.emitHttpRespond(s)
 	}
 }
 
@@ -277,39 +286,63 @@ func (c *Codegen) emitExpr(expr parser.Expression) string {
 		c.emit("%%%s = load i32, ptr @%s", tmp, name)
 		return "%" + tmp
 	case *parser.BinaryExpr:
-		left := c.emitExpr(e.Left)
-		right := c.emitExpr(e.Right)
 		tmp := c.nextRegister()
 
 		switch e.Operator {
-		case parser.OpAdd:
-			c.emit("%%%s = add i32 %s, %s", tmp, left, right)
-		case parser.OpSub:
-			c.emit("%%%s = sub i32 %s, %s", tmp, left, right)
-		case parser.OpMul:
-			c.emit("%%%s = mul i32 %s, %s", tmp, left, right)
-		case parser.OpDiv:
-			c.emit("%%%s = sdiv i32 %s, %s", tmp, left, right)
-		case parser.OpGt:
-			cmptmp := c.nextRegister()
-			c.emit("%%%s = icmp sgt i32 %s, %s", cmptmp, left, right)
-			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
-		case parser.OpLt:
-			cmptmp := c.nextRegister()
-			c.emit("%%%s = icmp slt i32 %s, %s", cmptmp, left, right)
-			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+		case parser.OpAdd, parser.OpSub, parser.OpMul, parser.OpDiv,
+			parser.OpGt, parser.OpLt, parser.OpGe, parser.OpLe:
+			left := c.emitExpr(e.Left)
+			right := c.emitExpr(e.Right)
+			switch e.Operator {
+			case parser.OpAdd:
+				c.emit("%%%s = add i32 %s, %s", tmp, left, right)
+			case parser.OpSub:
+				c.emit("%%%s = sub i32 %s, %s", tmp, left, right)
+			case parser.OpMul:
+				c.emit("%%%s = mul i32 %s, %s", tmp, left, right)
+			case parser.OpDiv:
+				c.emit("%%%s = sdiv i32 %s, %s", tmp, left, right)
+			case parser.OpGt:
+				cmptmp := c.nextRegister()
+				c.emit("%%%s = icmp sgt i32 %s, %s", cmptmp, left, right)
+				c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+			case parser.OpLt:
+				cmptmp := c.nextRegister()
+				c.emit("%%%s = icmp slt i32 %s, %s", cmptmp, left, right)
+				c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+			case parser.OpGe:
+				cmptmp := c.nextRegister()
+				c.emit("%%%s = icmp sge i32 %s, %s", cmptmp, left, right)
+				c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+			case parser.OpLe:
+				cmptmp := c.nextRegister()
+				c.emit("%%%s = icmp sle i32 %s, %s", cmptmp, left, right)
+				c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+			}
+			return "%" + tmp
+
 		case parser.OpEq:
+			// String comparison: use cob_picx_eq if either operand is a string
+			_, leftIsStr := e.Left.(*parser.IdentifierExpr)
+			_, rightIsStr := e.Right.(*parser.IdentifierExpr)
+			_, leftIsLit := e.Left.(*parser.StringLiteralExpr)
+			_, rightIsLit := e.Right.(*parser.StringLiteralExpr)
+
+			if leftIsStr || rightIsStr || leftIsLit || rightIsLit {
+				leftPtr := c.emitExprPtr(e.Left)
+				rightPtr := c.emitExprPtr(e.Right)
+				leftSize := c.exprSize(e.Left)
+				c.emit("%%%s = call i32 @cob_picx_eq(ptr %s, i64 %d, ptr %s)",
+					tmp, leftPtr, leftSize, rightPtr)
+				return "%" + tmp
+			}
+			// Numeric comparison
+			left := c.emitExpr(e.Left)
+			right := c.emitExpr(e.Right)
 			cmptmp := c.nextRegister()
 			c.emit("%%%s = icmp eq i32 %s, %s", cmptmp, left, right)
 			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
-		case parser.OpGe:
-			cmptmp := c.nextRegister()
-			c.emit("%%%s = icmp sge i32 %s, %s", cmptmp, left, right)
-			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
-		case parser.OpLe:
-			cmptmp := c.nextRegister()
-			c.emit("%%%s = icmp sle i32 %s, %s", cmptmp, left, right)
-			c.emit("%%%s = zext i1 %%%s to i32", tmp, cmptmp)
+			return "%" + tmp
 		}
 		return "%" + tmp
 	}
@@ -587,6 +620,151 @@ func (c *Codegen) emitJsonMapping(groupName, respPtr, lenReg string) {
 	}
 }
 
+func (c *Codegen) emitHttpListen(s *parser.HttpListen) {
+	resultReg := c.nextRegister()
+	statusPtr := "null"
+	if s.Status != "" {
+		statusPtr = "@" + sanitize(s.Status)
+	}
+	c.emit("%%%s = call i32 @cob_http_listen(i32 %d, ptr %s)",
+		resultReg, s.Port, statusPtr)
+
+	if s.Mapping != nil {
+		c.emitHttpListenMapping(*s.Mapping)
+	}
+	if s.Headers != nil && s.Headers.Group != "" {
+		c.emitHttpListenMapping(s.Headers.Group)
+	}
+
+	hasOn := len(s.OnException) > 0
+	hasNotOn := len(s.NotOnException) > 0
+
+	if hasOn || hasNotOn {
+		labelOk := c.nextLabel("http.ok")
+		labelErr := c.nextLabel("http.err")
+		labelMerge := c.nextLabel("http.end")
+
+		c.emit("%%is_ok = icmp eq i32 %%%s, 0", resultReg)
+		c.emit("br i1 %%is_ok, label %%%s, label %%%s", labelOk, labelErr)
+
+		c.emit("%s:", labelErr)
+		c.indent++
+		if hasOn {
+			c.emitStatements(s.OnException)
+		}
+		c.emit("br label %%%s", labelMerge)
+		c.indent--
+
+		c.emit("%s:", labelOk)
+		c.indent++
+		if hasNotOn {
+			c.emitStatements(s.NotOnException)
+		}
+		c.emit("br label %%%s", labelMerge)
+		c.indent--
+
+		c.emit("%s:", labelMerge)
+	}
+}
+
+func (c *Codegen) emitHttpListenMapping(groupName string) {
+	children := c.findGroupChildren(groupName)
+	if children == nil {
+		return
+	}
+	for _, child := range children {
+		if child.Picture == nil {
+			continue
+		}
+		fn := c.addStringConst([]byte(child.Name))
+		fnSz := len(child.Name) + 1
+		fnGep := fmt.Sprintf("getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0)", fnSz, fn)
+
+		switch child.Picture.Type {
+		case parser.PicX:
+			fieldReg := c.nextRegister()
+			sz := child.Picture.Size + 1
+			c.emit("%%%s = getelementptr [%d x i8], ptr @%s, i64 0, i64 0",
+				fieldReg, sz, sanitize(child.Name))
+			discard := c.nextRegister()
+			c.emit("%%%s = call i32 @cob_http_request_field(ptr %s, ptr %%%s, i64 %d)",
+				discard, fnGep, fieldReg, int64(child.Picture.Size))
+		}
+	}
+}
+
+func (c *Codegen) emitHttpRespondHeaders(groupName string) {
+	children := c.findGroupChildren(groupName)
+	if children == nil {
+		return
+	}
+	for _, child := range children {
+		if child.Picture == nil || child.Picture.Type != parser.PicX {
+			continue
+		}
+		hdrName := c.addStringConst([]byte(child.Name))
+		hdrNameSz := len(child.Name) + 1
+		hdrNameGep := fmt.Sprintf("getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0)", hdrNameSz, hdrName)
+
+		fieldReg := c.nextRegister()
+		sz := child.Picture.Size + 1
+		c.emit("%%%s = getelementptr [%d x i8], ptr @%s, i64 0, i64 0",
+			fieldReg, sz, sanitize(child.Name))
+		discard := c.nextRegister()
+		c.emit("%%%s = call i32 @cob_http_respond_set_header(ptr %s, ptr %%%s, i64 %d)",
+			discard, hdrNameGep, fieldReg, int64(child.Picture.Size))
+	}
+}
+
+func (c *Codegen) emitHttpRespond(s *parser.HttpRespond) {
+	if s.Headers != nil && s.Headers.Group != "" {
+		c.emitHttpRespondHeaders(s.Headers.Group)
+	}
+
+	bodyPtr := "null"
+	if s.Body != nil {
+		bodyPtr = c.emitExprPtr(s.Body)
+	}
+	contentTypePtr := "null"
+	if s.ContentType != nil {
+		contentTypePtr = c.emitExprPtr(s.ContentType)
+	}
+
+	resultReg := c.nextRegister()
+	c.emit("%%%s = call i32 @cob_http_respond(i32 %d, ptr %s, ptr %s)",
+		resultReg, s.Status, bodyPtr, contentTypePtr)
+
+	hasOn := len(s.OnException) > 0
+	hasNotOn := len(s.NotOnException) > 0
+
+	if hasOn || hasNotOn {
+		labelOk := c.nextLabel("http.ok")
+		labelErr := c.nextLabel("http.err")
+		labelMerge := c.nextLabel("http.end")
+
+		c.emit("%%is_ok = icmp eq i32 %%%s, 0", resultReg)
+		c.emit("br i1 %%is_ok, label %%%s, label %%%s", labelOk, labelErr)
+
+		c.emit("%s:", labelErr)
+		c.indent++
+		if hasOn {
+			c.emitStatements(s.OnException)
+		}
+		c.emit("br label %%%s", labelMerge)
+		c.indent--
+
+		c.emit("%s:", labelOk)
+		c.indent++
+		if hasNotOn {
+			c.emitStatements(s.NotOnException)
+		}
+		c.emit("br label %%%s", labelMerge)
+		c.indent--
+
+		c.emit("%s:", labelMerge)
+	}
+}
+
 var registerCounter int
 var labelCounter int
 
@@ -617,6 +795,18 @@ func (c *Codegen) fieldSize(name string) int {
 		return 0
 	}
 	return findFieldSize(name, c.prog.WorkingStorage.Items)
+}
+
+func (c *Codegen) exprSize(expr parser.Expression) int64 {
+	switch e := expr.(type) {
+	case *parser.IdentifierExpr:
+		return int64(c.fieldSize(e.Name))
+	case *parser.StringLiteralExpr:
+		return int64(len(e.Value))
+	case *parser.IntegerLiteralExpr:
+		return 4
+	}
+	return 1
 }
 
 func (c *Codegen) isNumericField(name string) bool {

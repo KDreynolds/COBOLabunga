@@ -129,6 +129,10 @@ func (c *Checker) checkStatement(stmt parser.Statement) {
 		c.checkHttpPatch(s)
 	case *parser.HttpDelete:
 		c.checkHttpDelete(s)
+	case *parser.HttpListen:
+		c.checkHttpListen(s)
+	case *parser.HttpRespond:
+		c.checkHttpRespond(s)
 	}
 }
 
@@ -335,6 +339,38 @@ func (c *Checker) checkHttpDelete(s *parser.HttpDelete) {
 	if s.Status != "" {
 		if sym := c.lookup(s.Status, s.Line, s.Col); sym != nil && sym.Type != TypeNumericComp {
 			c.err("status field '%s' must be PIC 9(n) COMP", s.Line, s.Col, s.Status)
+		}
+	}
+	if s.Headers != nil {
+		c.checkHeaders(s.Headers, s.Line, s.Col)
+	}
+	c.checkExceptionBlocks(s.OnException, s.NotOnException)
+}
+
+func (c *Checker) checkHttpListen(s *parser.HttpListen) {
+	if s.Mapping != nil {
+		if sym := c.lookup(*s.Mapping, s.Line, s.Col); sym != nil && sym.Type != TypeGroup {
+			c.err("mapping target '%s' is not a group item", s.Line, s.Col, *s.Mapping)
+		}
+	}
+	if s.Status != "" {
+		if sym := c.lookup(s.Status, s.Line, s.Col); sym != nil && sym.Type != TypeNumericComp {
+			c.err("status field '%s' must be PIC 9(n) COMP", s.Line, s.Col, s.Status)
+		}
+	}
+	c.checkExceptionBlocks(s.OnException, s.NotOnException)
+}
+
+func (c *Checker) checkHttpRespond(s *parser.HttpRespond) {
+	if s.Body != nil {
+		c.checkExpr(s.Body)
+	}
+	if s.ContentType != nil {
+		c.checkExpr(s.ContentType)
+	}
+	if s.Mapping != nil {
+		if sym := c.lookup(*s.Mapping, s.Line, s.Col); sym != nil && sym.Type != TypeGroup {
+			c.err("mapping target '%s' is not a group item", s.Line, s.Col, *s.Mapping)
 		}
 	}
 	if s.Headers != nil {

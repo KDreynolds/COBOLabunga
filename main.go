@@ -114,9 +114,53 @@ func usesHTTP(prog *parser.Program) bool {
 func statementsUseHTTP(stmts []parser.Statement) bool {
 	for _, stmt := range stmts {
 		switch stmt.(type) {
-		case *parser.HttpGet, *parser.HttpPost, *parser.HttpPut,
-			*parser.HttpPatch, *parser.HttpDelete:
+		case *parser.HttpGet:
+			s := stmt.(*parser.HttpGet)
+			if statementsUseHTTP(s.OnException) || statementsUseHTTP(s.NotOnException) {
+				return true
+			}
 			return true
+		case *parser.HttpPost:
+			s := stmt.(*parser.HttpPost)
+			if statementsUseHTTP(s.OnException) || statementsUseHTTP(s.NotOnException) {
+				return true
+			}
+			return true
+		case *parser.HttpPut:
+			s := stmt.(*parser.HttpPut)
+			if statementsUseHTTP(s.OnException) || statementsUseHTTP(s.NotOnException) {
+				return true
+			}
+			return true
+		case *parser.HttpPatch:
+			s := stmt.(*parser.HttpPatch)
+			if statementsUseHTTP(s.OnException) || statementsUseHTTP(s.NotOnException) {
+				return true
+			}
+			return true
+		case *parser.HttpDelete:
+			s := stmt.(*parser.HttpDelete)
+			if statementsUseHTTP(s.OnException) || statementsUseHTTP(s.NotOnException) {
+				return true
+			}
+			return true
+		case *parser.HttpListen:
+			s := stmt.(*parser.HttpListen)
+			if statementsUseHTTP(s.OnException) || statementsUseHTTP(s.NotOnException) {
+				return true
+			}
+			return true
+		case *parser.HttpRespond:
+			s := stmt.(*parser.HttpRespond)
+			if statementsUseHTTP(s.OnException) || statementsUseHTTP(s.NotOnException) {
+				return true
+			}
+			return true
+		case *parser.Perform:
+			s := stmt.(*parser.Perform)
+			if statementsUseHTTP(s.Body) {
+				return true
+			}
 		case *parser.If:
 			s := stmt.(*parser.If)
 			if statementsUseHTTP(s.ThenBody) || statementsUseHTTP(s.ElseBody) {

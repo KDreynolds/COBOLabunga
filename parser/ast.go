@@ -187,18 +187,43 @@ type HeadersPhrase struct {
 	Group string
 }
 
-func (*Move) stmtTag()      {}
-func (*Compute) stmtTag()   {}
-func (*Display) stmtTag()   {}
-func (*Perform) stmtTag()   {}
-func (*If) stmtTag()        {}
-func (*Evaluate) stmtTag()  {}
-func (*StopRun) stmtTag()   {}
-func (*HttpGet) stmtTag()   {}
-func (*HttpPost) stmtTag()  {}
-func (*HttpPut) stmtTag()   {}
-func (*HttpPatch) stmtTag() {}
-func (*HttpDelete) stmtTag() {}
+type HttpListen struct {
+	Port           int
+	Mapping        *string
+	Status         string
+	Headers        *HeadersPhrase
+	OnException    []Statement
+	NotOnException []Statement
+	Line           int
+	Col            int
+}
+
+type HttpRespond struct {
+	Status         int
+	Body           Expression
+	ContentType    Expression
+	Headers        *HeadersPhrase
+	Mapping        *string
+	OnException    []Statement
+	NotOnException []Statement
+	Line           int
+	Col            int
+}
+
+func (*Move) stmtTag()        {}
+func (*Compute) stmtTag()     {}
+func (*Display) stmtTag()     {}
+func (*Perform) stmtTag()     {}
+func (*If) stmtTag()          {}
+func (*Evaluate) stmtTag()    {}
+func (*StopRun) stmtTag()     {}
+func (*HttpGet) stmtTag()     {}
+func (*HttpPost) stmtTag()    {}
+func (*HttpPut) stmtTag()     {}
+func (*HttpPatch) stmtTag()   {}
+func (*HttpDelete) stmtTag()  {}
+func (*HttpListen) stmtTag()  {}
+func (*HttpRespond) stmtTag() {}
 
 // --- Expression Interface ---
 
@@ -392,6 +417,24 @@ func printStatement(stmt Statement, indent int) {
 			fmt.Printf(" GIVING %s", *s.Giving)
 		}
 		fmt.Printf(" STATUS %s\n", s.Status)
+	case *HttpListen:
+		fmt.Printf("%sHTTP-LISTEN PORT %d", prefix, s.Port)
+		if s.Mapping != nil {
+			fmt.Printf(" MAPPING %s", *s.Mapping)
+		}
+		if s.Status != "" {
+			fmt.Printf(" STATUS %s", s.Status)
+		}
+		fmt.Println()
+	case *HttpRespond:
+		fmt.Printf("%sHTTP-RESPOND STATUS %d", prefix, s.Status)
+		if s.Body != nil {
+			fmt.Printf(" BODY %s", exprStr(s.Body))
+		}
+		if s.ContentType != nil {
+			fmt.Printf(" CONTENT-TYPE %s", exprStr(s.ContentType))
+		}
+		fmt.Println()
 	}
 }
 
