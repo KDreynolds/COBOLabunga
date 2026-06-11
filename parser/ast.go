@@ -132,6 +132,34 @@ type StopRun struct {
 	Col  int
 }
 
+type Peek struct {
+	Address Expression
+	Into    string
+	Line    int
+	Col     int
+}
+
+type Poke struct {
+	Address Expression
+	Value   Expression
+	Line    int
+	Col     int
+}
+
+type PortIn struct {
+	Port Expression
+	Into string
+	Line int
+	Col  int
+}
+
+type PortOut struct {
+	Port  Expression
+	Value Expression
+	Line  int
+	Col   int
+}
+
 type HttpGet struct {
 	URL            Expression
 	Giving         *string
@@ -282,6 +310,10 @@ func (*Evaluate) stmtTag()    {}
 func (*Accept) stmtTag()      {}
 func (*Initialize) stmtTag()  {}
 func (*StopRun) stmtTag()     {}
+func (*Peek) stmtTag()       {}
+func (*Poke) stmtTag()       {}
+func (*PortIn) stmtTag()     {}
+func (*PortOut) stmtTag()    {}
 func (*StringStmt) stmtTag()  {}
 func (*UnstringStmt) stmtTag() {}
 func (*HttpGet) stmtTag()     {}
@@ -464,6 +496,14 @@ func printStatement(stmt Statement, indent int) {
 		fmt.Println()
 	case *StopRun:
 		fmt.Printf("%sSTOP RUN\n", prefix)
+	case *Peek:
+		fmt.Printf("%sPEEK(%s) INTO %s\n", prefix, exprStr(s.Address), s.Into)
+	case *Poke:
+		fmt.Printf("%sPOKE(%s, %s)\n", prefix, exprStr(s.Address), exprStr(s.Value))
+	case *PortIn:
+		fmt.Printf("%sPORT-IN(%s) INTO %s\n", prefix, exprStr(s.Port), s.Into)
+	case *PortOut:
+		fmt.Printf("%sPORT-OUT(%s, %s)\n", prefix, exprStr(s.Port), exprStr(s.Value))
 	case *HttpGet:
 		fmt.Printf("%sHTTP-GET %s", prefix, exprStr(s.URL))
 		if s.Giving != nil {

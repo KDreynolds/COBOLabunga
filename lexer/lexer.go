@@ -64,6 +64,10 @@ func buildKeywordMap() map[string]TokenType {
 		"HTTP-LISTEN":     HTTP_LISTEN,
 		"HTTP-RESPOND":    HTTP_RESPOND,
 		"PORT":            PORT,
+		"PORT-IN":         PORT_IN,
+		"PORT-OUT":        PORT_OUT,
+		"PEEK":            PEEK,
+		"POKE":            POKE,
 		"GIVING":          GIVING,
 		"SENDING":         SENDING,
 		"STATUS":          STATUS,
@@ -167,6 +171,9 @@ func (l *Lexer) Next() Token {
 	case ch == ')':
 		l.read()
 		return Token{Type: RPAREN, Literal: ")", Line: line, Column: col}
+	case ch == ',':
+		l.read()
+		return Token{Type: COMMA, Literal: ",", Line: line, Column: col}
 	case ch == '=':
 		l.read()
 		return Token{Type: EQUALS, Literal: "=", Line: line, Column: col}

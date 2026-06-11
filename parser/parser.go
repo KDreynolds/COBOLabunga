@@ -464,6 +464,14 @@ func (p *Parser) parseStatement() Statement {
 		return p.parseHttpListenStatement()
 	case lexer.HTTP_RESPOND:
 		return p.parseHttpRespondStatement()
+	case lexer.PEEK:
+		return p.parsePeekStatement()
+	case lexer.POKE:
+		return p.parsePokeStatement()
+	case lexer.PORT_IN:
+		return p.parsePortInStatement()
+	case lexer.PORT_OUT:
+		return p.parsePortOutStatement()
 	default:
 		p.error("unexpected token in statement: " + p.peek().Literal)
 		p.advance()
@@ -1484,4 +1492,58 @@ func (p *Parser) parsePrimary() Expression {
 	}
 
 	return nil
+}
+
+func (p *Parser) parsePeekStatement() *Peek {
+	stmt := &Peek{Line: p.peek().Line, Col: p.peek().Column}
+	p.advance() // PEEK
+	p.expect(lexer.LPAREN)
+	stmt.Address = p.parseExpression()
+	p.expect(lexer.RPAREN)
+	p.expect(lexer.INTO)
+	if p.peek().Type != lexer.IDENTIFIER {
+		p.error("expected identifier after INTO")
+		return stmt
+	}
+	stmt.Into = p.peek().Literal
+	p.advance()
+	return stmt
+}
+
+func (p *Parser) parsePokeStatement() *Poke {
+	stmt := &Poke{Line: p.peek().Line, Col: p.peek().Column}
+	p.advance() // POKE
+	p.expect(lexer.LPAREN)
+	stmt.Address = p.parseExpression()
+	p.expect(lexer.COMMA)
+	stmt.Value = p.parseExpression()
+	p.expect(lexer.RPAREN)
+	return stmt
+}
+
+func (p *Parser) parsePortInStatement() *PortIn {
+	stmt := &PortIn{Line: p.peek().Line, Col: p.peek().Column}
+	p.advance() // PORT-IN
+	p.expect(lexer.LPAREN)
+	stmt.Port = p.parseExpression()
+	p.expect(lexer.RPAREN)
+	p.expect(lexer.INTO)
+	if p.peek().Type != lexer.IDENTIFIER {
+		p.error("expected identifier after INTO")
+		return stmt
+	}
+	stmt.Into = p.peek().Literal
+	p.advance()
+	return stmt
+}
+
+func (p *Parser) parsePortOutStatement() *PortOut {
+	stmt := &PortOut{Line: p.peek().Line, Col: p.peek().Column}
+	p.advance() // PORT-OUT
+	p.expect(lexer.LPAREN)
+	stmt.Port = p.parseExpression()
+	p.expect(lexer.COMMA)
+	stmt.Value = p.parseExpression()
+	p.expect(lexer.RPAREN)
+	return stmt
 }

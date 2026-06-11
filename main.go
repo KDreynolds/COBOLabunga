@@ -14,6 +14,7 @@ import (
 
 func main() {
 	wasmTarget := false
+	bareMetal := false
 	outName := ""
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -21,6 +22,13 @@ func main() {
 			wasmTarget = true
 			args = append(args[:i], args[i+1:]...)
 			i--
+		} else if args[i] == "--target" && i+1 < len(args) {
+			next := args[i+1]
+			if next == "x86-bare" {
+				bareMetal = true
+				args = append(args[:i], args[i+2:]...)
+				i--
+			}
 		} else if args[i] == "-o" && i+1 < len(args) {
 			outName = args[i+1]
 			args = append(args[:i], args[i+2:]...)
@@ -28,7 +36,7 @@ func main() {
 		}
 	}
 	if len(args) < 1 {
-		fmt.Println("Usage: cobolabunga [--wasm] [-o output] <file.cbl>")
+		fmt.Println("Usage: cobolabunga [--wasm] [--target x86-bare] [-o output] <file.cbl>")
 		os.Exit(1)
 	}
 
@@ -74,6 +82,8 @@ func main() {
 	cg := codegen.New(prog)
 	if wasmTarget {
 		cg.SetTarget("wasm32-unknown-wasi")
+	} else if bareMetal {
+		cg.SetTarget("x86_64-pc-none-elf")
 	}
 	ir := cg.Generate()
 
@@ -119,6 +129,9 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("Wrote %s\n", exeName)
+	} else if bareMetal {
+		// Bare metal: just assemble to object file; linking done manually
+		fmt.Printf("Wrote %s\n", objName)
 	} else {
 		needsRuntime := usesHTTP(prog) || usesStringRuntime(prog)
 		if needsRuntime {
@@ -247,6 +260,9 @@ func usesStringRuntime(prog *parser.Program) bool {
 		if statementsUseString(para.Statements) {
 			return true
 		}
+		if statementsUseStringCmp(para.Statements, prog.WorkingStorage) {
+			return true
+		}
 	}
 	return false
 }
@@ -282,6 +298,90 @@ func statementsUseString(stmts []parser.Statement) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+func statementsUseStringCmp(stmts []parser.Statement, ws *parser.WorkingStorage) bool {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *parser.If:
+			if exprUsesStringCmp(s.Condition, ws) {
+				return true
+			}
+			if statementsUseStringCmp(s.ThenBody, ws) || statementsUseStringCmp(s.ElseBody, ws) {
+				return true
+			}
+		case *parser.Evaluate:
+			if evalUsesStringCmp(s, ws) {
+				return true
+			}
+			for _, wc := range s.WhenClauses {
+				if statementsUseStringCmp(wc.Body, ws) {
+					return true
+				}
+			}
+			if statementsUseStringCmp(s.WhenOther, ws) {
+				return true
+			}
+		case *parser.Perform:
+			if statementsUseStringCmp(s.Body, ws) {
+				return true
+			}
+		case *parser.StringStmt:
+			if statementsUseStringCmp(s.OnOverflow, ws) || statementsUseStringCmp(s.NotOnOverflow, ws) {
+				return true
+			}
+		case *parser.UnstringStmt:
+			if statementsUseStringCmp(s.OnOverflow, ws) || statementsUseStringCmp(s.NotOnOverflow, ws) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func exprUsesStringCmp(e parser.Expression, ws *parser.WorkingStorage) bool {
+	switch x := e.(type) {
+	case *parser.BinaryExpr:
+		if x.Operator == parser.OpEq {
+			leftIsStr := isStringField(x.Left, ws)
+			rightIsStr := isStringField(x.Right, ws)
+			return leftIsStr || rightIsStr
+		}
+		return exprUsesStringCmp(x.Left, ws) || exprUsesStringCmp(x.Right, ws)
+	}
+	return false
+}
+
+func evalUsesStringCmp(s *parser.Evaluate, ws *parser.WorkingStorage) bool {
+	if isStringField(s.Subject, ws) {
+		return true
+	}
+	for _, wc := range s.WhenClauses {
+		for _, v := range wc.Values {
+			if isStringField(v, ws) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isStringField(e parser.Expression, ws *parser.WorkingStorage) bool {
+	switch x := e.(type) {
+	case *parser.StringLiteralExpr:
+		return true
+	case *parser.IdentifierExpr:
+		if ws == nil {
+			return false
+		}
+		for _, item := range ws.Items {
+			if item.Name == x.Name && item.Picture != nil && item.Picture.Type == parser.PicX {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }

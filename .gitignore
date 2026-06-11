@@ -1,6 +1,8 @@
 *.ll
 *.o
 *.exe
+*.a
+*.elf
 cobolabunga
 hello
 compute

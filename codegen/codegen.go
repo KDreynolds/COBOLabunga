@@ -20,6 +20,7 @@ type Codegen struct {
 	strConsts     []stringConst
 	targetTriple  string
 	isWasm        bool
+	isBareMetal   bool
 }
 
 func New(prog *parser.Program) *Codegen {
@@ -29,6 +30,11 @@ func New(prog *parser.Program) *Codegen {
 func (c *Codegen) SetTarget(triple string) {
 	c.targetTriple = triple
 	c.isWasm = strings.Contains(triple, "wasm")
+	c.isBareMetal = strings.Contains(triple, "none-elf") || strings.Contains(triple, "bare")
+}
+
+func (c *Codegen) isBare() bool {
+	return c.isBareMetal
 }
 
 func (c *Codegen) Generate() string {
@@ -39,34 +45,39 @@ func (c *Codegen) Generate() string {
 	c.emit("target triple = \"" + c.targetTriple + "\"")
 	c.emit("")
 
-	c.emit("declare i32 @puts(ptr)")
-	c.emit("declare i32 @printf(ptr, ...)")
-	c.emit("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
-	c.emit("declare ptr @fgets(ptr, i32, ptr)")
-	c.emit("declare i32 @atoi(ptr)")
-	c.emit("@stdin = external global ptr")
-	c.emit("")
-	c.emit("declare i32 @cob_http_get(ptr, ptr, i64, ptr, ptr)")
-	c.emit("declare i32 @cob_http_post(ptr, ptr, ptr, i64, ptr, ptr)")
-	c.emit("declare i32 @cob_http_put(ptr, ptr, ptr, i64, ptr, ptr)")
-	c.emit("declare i32 @cob_http_patch(ptr, ptr, ptr, i64, ptr, ptr)")
-	c.emit("declare i32 @cob_http_delete(ptr, ptr, i64, ptr, ptr)")
-	c.emit("declare i32 @cob_json_str(ptr, i64, ptr, ptr, i64)")
-	c.emit("declare i32 @cob_json_int(ptr, i64, ptr, ptr)")
-	c.emit("declare i32 @cob_http_listen(i32, ptr)")
-	c.emit("declare i32 @cob_http_respond(i32, ptr, ptr)")
-	c.emit("declare i32 @cob_http_respond_set_header(ptr, ptr, i64)")
-	c.emit("declare i32 @cob_http_request_field(ptr, ptr, i64)")
-	c.emit("declare i32 @cob_picx_eq(ptr, i64, ptr)")
-	c.emit("declare void @cob_string_init(ptr, i64, ptr)")
-	c.emit("declare void @cob_string_add_size(ptr, i64)")
-	c.emit("declare void @cob_string_add_until_space(ptr, i64)")
-	c.emit("declare void @cob_string_add_until_delim(ptr, i64, ptr, i64)")
-	c.emit("declare void @cob_string_finish(ptr, ptr)")
-	c.emit("declare void @cob_unstring_init(ptr, i64, ptr, ptr)")
-	c.emit("declare i32 @cob_unstring_extract(ptr, i64, ptr, i64, ptr, ptr, i64, ptr, i64)")
-	c.emit("declare void @cob_unstring_finish(ptr, ptr, ptr)")
-	c.emit("")
+	if !c.isBare() {
+		c.emit("declare i32 @puts(ptr)")
+		c.emit("declare i32 @printf(ptr, ...)")
+		c.emit("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
+		c.emit("declare ptr @fgets(ptr, i32, ptr)")
+		c.emit("declare i32 @atoi(ptr)")
+		c.emit("@stdin = external global ptr")
+		c.emit("")
+		c.emit("declare i32 @cob_http_get(ptr, ptr, i64, ptr, ptr)")
+		c.emit("declare i32 @cob_http_post(ptr, ptr, ptr, i64, ptr, ptr)")
+		c.emit("declare i32 @cob_http_put(ptr, ptr, ptr, i64, ptr, ptr)")
+		c.emit("declare i32 @cob_http_patch(ptr, ptr, ptr, i64, ptr, ptr)")
+		c.emit("declare i32 @cob_http_delete(ptr, ptr, i64, ptr, ptr)")
+		c.emit("declare i32 @cob_json_str(ptr, i64, ptr, ptr, i64)")
+		c.emit("declare i32 @cob_json_int(ptr, i64, ptr, ptr)")
+		c.emit("declare i32 @cob_http_listen(i32, ptr)")
+		c.emit("declare i32 @cob_http_respond(i32, ptr, ptr)")
+		c.emit("declare i32 @cob_http_respond_set_header(ptr, ptr, i64)")
+		c.emit("declare i32 @cob_http_request_field(ptr, ptr, i64)")
+		c.emit("declare i32 @cob_picx_eq(ptr, i64, ptr)")
+		c.emit("declare void @cob_string_init(ptr, i64, ptr)")
+		c.emit("declare void @cob_string_add_size(ptr, i64)")
+		c.emit("declare void @cob_string_add_until_space(ptr, i64)")
+		c.emit("declare void @cob_string_add_until_delim(ptr, i64, ptr, i64)")
+		c.emit("declare void @cob_string_finish(ptr, ptr)")
+		c.emit("declare void @cob_unstring_init(ptr, i64, ptr, ptr)")
+		c.emit("declare i32 @cob_unstring_extract(ptr, i64, ptr, i64, ptr, ptr, i64, ptr, i64)")
+		c.emit("declare void @cob_unstring_finish(ptr, ptr, ptr)")
+		c.emit("")
+	} else {
+		c.emit("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)")
+		c.emit("")
+	}
 
 	c.emitWorkingStorage()
 	c.emitMain()
@@ -78,6 +89,11 @@ func (c *Codegen) Generate() string {
 	}
 
 	c.emitStringConsts()
+
+	if c.isBare() {
+		c.emitBareHelpers()
+	}
+
 	return c.buf.String()
 }
 
@@ -171,13 +187,21 @@ func (c *Codegen) emitMain() {
 	if isWasm {
 		entryName = "__main_argc_argv"
 	}
-	c.emit("define hidden i32 @%s(i32 %%argc, ptr %%argv) nounwind {", entryName)
+	if c.isBare() {
+		c.emit("define void @_start() noreturn {")
+	} else {
+		c.emit("define hidden i32 @%s(i32 %%argc, ptr %%argv) nounwind {", entryName)
+	}
 	c.indent++
 	firstPara := c.firstParagraphName()
 	if firstPara != "" {
 		c.emit("call void @%s()", firstPara)
 	}
-	c.emit("ret i32 0")
+	if c.isBare() {
+		c.emit("ret void")
+	} else {
+		c.emit("ret i32 0")
+	}
 	c.indent--
 	c.emit("}")
 	c.emit("")
@@ -241,10 +265,21 @@ func (c *Codegen) emitStatement(stmt parser.Statement) {
 		c.emitInitialize(s)
 	case *parser.UnstringStmt:
 		c.emitUnstring(s)
+	case *parser.Peek:
+		c.emitPeek(s)
+	case *parser.Poke:
+		c.emitPoke(s)
+	case *parser.PortIn:
+		c.emitPortIn(s)
+	case *parser.PortOut:
+		c.emitPortOut(s)
 	}
 }
 
 func (c *Codegen) emitAccept(s *parser.Accept) {
+	if c.isBare() {
+		panic("ACCEPT not yet supported on bare metal target")
+	}
 	name := sanitize(s.Name)
 	size := c.fieldSize(s.Name)
 
@@ -303,6 +338,66 @@ func (c *Codegen) emitAccept(s *parser.Accept) {
 	}
 }
 
+func (c *Codegen) emitPeek(s *parser.Peek) {
+	if !c.isBare() {
+		panic("PEEK requires --target x86-bare")
+	}
+	addr := c.emitExpr(s.Address)
+	addr64 := c.nextRegister()
+	c.emit("%%%s = sext i32 %s to i64", addr64, addr)
+	ptr := c.nextRegister()
+	into := sanitize(s.Into)
+	c.emit("%%%s = inttoptr i64 %%%s to ptr", ptr, addr64)
+	val := c.nextRegister()
+	c.emit("%%%s = load i8, ptr %%%s", val, ptr)
+	ext := c.nextRegister()
+	c.emit("%%%s = zext i8 %%%s to i32", ext, val)
+	c.emit("store i32 %%%s, ptr @%s", ext, into)
+}
+
+func (c *Codegen) emitPoke(s *parser.Poke) {
+	if !c.isBare() {
+		panic("POKE requires --target x86-bare")
+	}
+	addr := c.emitExpr(s.Address)
+	addr64 := c.nextRegister()
+	c.emit("%%%s = sext i32 %s to i64", addr64, addr)
+	val := c.emitExpr(s.Value)
+	ptr := c.nextRegister()
+	trunc := c.nextRegister()
+	c.emit("%%%s = inttoptr i64 %%%s to ptr", ptr, addr64)
+	c.emit("%%%s = trunc i32 %s to i8", trunc, val)
+	c.emit("store i8 %%%s, ptr %%%s", trunc, ptr)
+}
+
+func (c *Codegen) emitPortIn(s *parser.PortIn) {
+	if !c.isBare() {
+		panic("PORT-IN requires --target x86-bare")
+	}
+	port := c.emitExpr(s.Port)
+	port16 := c.nextRegister()
+	c.emit("%%%s = trunc i32 %s to i16", port16, port)
+	reg := c.nextRegister()
+	into := sanitize(s.Into)
+	c.emit("%%%s = call i8 asm \"inb $1, $0\", \"={al},{dx}\"(i16 %%%s)", reg, port16)
+	ext := c.nextRegister()
+	c.emit("%%%s = zext i8 %%%s to i32", ext, reg)
+	c.emit("store i32 %%%s, ptr @%s", ext, into)
+}
+
+func (c *Codegen) emitPortOut(s *parser.PortOut) {
+	if !c.isBare() {
+		panic("PORT-OUT requires --target x86-bare")
+	}
+	port := c.emitExpr(s.Port)
+	port16 := c.nextRegister()
+	c.emit("%%%s = trunc i32 %s to i16", port16, port)
+	val := c.emitExpr(s.Value)
+	trunc := c.nextRegister()
+	c.emit("%%%s = trunc i32 %s to i8", trunc, val)
+	c.emit("call void asm \"outb $0, $1\", \"{al},{dx}\"(i8 %%%s, i16 %%%s)", trunc, port16)
+}
+
 func (c *Codegen) emitInitialize(s *parser.Initialize) {
 	for _, name := range s.Items {
 		size := c.fieldSize(name)
@@ -322,6 +417,10 @@ func (c *Codegen) emitInitialize(s *parser.Initialize) {
 }
 
 func (c *Codegen) emitDisplay(s *parser.Display) {
+	if c.isBare() {
+		c.emitBareDisplay(s)
+		return
+	}
 	for _, item := range s.Items {
 		switch expr := item.(type) {
 		case *parser.IdentifierExpr:
@@ -349,6 +448,37 @@ func (c *Codegen) emitDisplay(s *parser.Display) {
 			sz := len(str) + 1
 			c.emit("call i32 @puts(ptr getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0))",
 				sz, cn)
+		}
+	}
+}
+
+func (c *Codegen) emitBareDisplay(s *parser.Display) {
+	for _, item := range s.Items {
+		switch expr := item.(type) {
+		case *parser.IdentifierExpr:
+			if c.isNumericField(expr.Name) {
+				reg := c.nextRegister()
+				c.emit("%%%s = load i32, ptr @%s", reg, sanitize(expr.Name))
+				c.emit("call void @cob_bare_print_int(i32 %%%s)", reg)
+			} else {
+				name := sanitize(expr.Name)
+				reg := c.nextRegister()
+				size := c.fieldSize(expr.Name)
+				c.emit("%%%s = getelementptr [%d x i8], ptr @%s, i64 0, i64 0",
+					reg, size+1, name)
+				c.emit("call void @cob_bare_print_str(ptr %%%s, i64 %d)", reg, size)
+			}
+		case *parser.StringLiteralExpr:
+			cn := c.addStringConst([]byte(expr.Value))
+			sz := len(expr.Value)
+			c.emit("call void @cob_bare_print_str(ptr getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0), i64 %d)",
+				sz+1, cn, sz)
+		case *parser.IntegerLiteralExpr:
+			str := fmt.Sprintf("%d", expr.Value)
+			cn := c.addStringConst([]byte(str))
+			sz := len(str)
+			c.emit("call void @cob_bare_print_str(ptr getelementptr inbounds ([%d x i8], ptr @%s, i64 0, i64 0), i64 %d)",
+				sz+1, cn, sz)
 		}
 	}
 }
@@ -1607,3 +1737,122 @@ func findGroupItemChildren(name string, items []*parser.DataItem) []*parser.Data
 	}
 	return nil
 }
+
+func (c *Codegen) emitBareHelpers() {
+	c.emit("")
+	c.emit("; VGA cursor position (col 0-based)")
+	c.emit("@cob.vga.col = global i32 0")
+	c.emit("")
+	c.buf.WriteString(vgaCode)
+	c.buf.WriteString("\n")
+}
+
+var vgaCode = `
+define void @cob_bare_print_str(ptr %str, i64 %len) {
+entry:
+  %vga = inttoptr i64 7047296 to ptr
+  %col = load i32, ptr @cob.vga.col
+  %col_sext = sext i32 %col to i64
+  %vga_start = getelementptr i8, ptr %vga, i64 %col_sext
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %next_i, %body ]
+  %dst = phi ptr [ %vga_start, %entry ], [ %dst_next, %body ]
+  %done = icmp eq i64 %i, %len
+  br i1 %done, label %done_bb, label %body
+body:
+  %ch_ptr = getelementptr i8, ptr %str, i64 %i
+  %ch = load i8, ptr %ch_ptr
+  store i8 %ch, ptr %dst
+  %attr = getelementptr i8, ptr %dst, i64 1
+  store i8 7, ptr %attr
+  %next_i = add i64 %i, 1
+  %dst_next = getelementptr i8, ptr %dst, i64 2
+  br label %loop
+done_bb:
+  %new_col = add i64 %col_sext, %len
+  %new_col_trunc = trunc i64 %new_col to i32
+  store i32 %new_col_trunc, ptr @cob.vga.col
+  ret void
+}
+
+define void @cob_bare_print_int(i32 %val) {
+entry:
+  %vga = inttoptr i64 7047296 to ptr
+  %col = load i32, ptr @cob.vga.col
+  %col_sext = sext i32 %col to i64
+  %vga_start = getelementptr i8, ptr %vga, i64 %col_sext
+  %zero = icmp eq i32 %val, 0
+  br i1 %zero, label %zero_bb, label %nz_entry
+zero_bb:
+  store i8 48, ptr %vga_start
+  %za = getelementptr i8, ptr %vga_start, i64 1
+  store i8 7, ptr %za
+  store i32 2, ptr @cob.vga.col
+  ret void
+nz_entry:
+  %neg = icmp slt i32 %val, 0
+  br i1 %neg, label %neg_bb, label %digits
+neg_bb:
+  store i8 45, ptr %vga_start
+  %na = getelementptr i8, ptr %vga_start, i64 1
+  store i8 7, ptr %na
+  %neg_val = sub i32 0, %val
+  br label %digits
+digits:
+  %n = phi i32 [ %val, %nz_entry ], [ %neg_val, %neg_bb ]
+  %base = phi ptr [ %vga_start, %nz_entry ], [ %vga_start, %neg_bb ]
+  %neg_flag = phi i32 [ 0, %nz_entry ], [ 1, %neg_bb ]
+  %chars = call i32 @cob_utoa(i32 %n, ptr %base)
+  %total = add i32 %neg_flag, %chars
+  %col_old = load i32, ptr @cob.vga.col
+  %col_new = add i32 %col_old, %total
+  store i32 %col_new, ptr @cob.vga.col
+  ret void
+}
+
+define internal i32 @cob_utoa(i32 %n, ptr %buf) {
+entry:
+  %tmp = alloca [12 x i8], align 1
+  %is_zero = icmp eq i32 %n, 0
+  br i1 %is_zero, label %zero_bb, label %conv
+zero_bb:
+  store i8 48, ptr %buf
+  %za = getelementptr i8, ptr %buf, i64 1
+  store i8 7, ptr %za
+  ret i32 1
+conv:
+  br label %conv_loop
+conv_loop:
+  %val = phi i32 [ %n, %conv ], [ %div, %conv_loop ]
+  %pos = phi i64 [ 0, %conv ], [ %p_next, %conv_loop ]
+  %div = udiv i32 %val, 10
+  %rem = urem i32 %val, 10
+  %dig = trunc i32 %rem to i8
+  %dig_ch = add i8 48, %dig
+  %slot = getelementptr i8, ptr %tmp, i64 %pos
+  store i8 %dig_ch, ptr %slot
+  %p_next = add i64 %pos, 1
+  %div_end = icmp eq i32 %div, 0
+  br i1 %div_end, label %conv_done, label %conv_loop
+conv_done:
+  %len = trunc i64 %p_next to i32
+  br label %copy_loop
+copy_loop:
+  %ci = phi i64 [ 0, %conv_done ], [ %ci_next, %copy_loop ]
+  %ri = phi i64 [ %p_next, %conv_done ], [ %ri_next, %copy_loop ]
+  %ri_dec = sub i64 %ri, 1
+  %src = getelementptr i8, ptr %tmp, i64 %ri_dec
+  %ch = load i8, ptr %src
+  %dst_p = getelementptr i8, ptr %buf, i64 %ci
+  store i8 %ch, ptr %dst_p
+  %attrd = getelementptr i8, ptr %dst_p, i64 1
+  store i8 7, ptr %attrd
+  %ci_next = add i64 %ci, 1
+  %ri_next = sub i64 %ri_dec, 0
+  %copy_end = icmp eq i64 %ri_dec, 0
+  br i1 %copy_end, label %final, label %copy_loop
+final:
+  ret i32 %len
+}
+`

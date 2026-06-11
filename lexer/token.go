@@ -67,6 +67,12 @@ const (
 	NOT
 	END_HTTP
 
+	// Bare metal keywords
+	PEEK
+	POKE
+	PORT_IN
+	PORT_OUT
+
 	// STRING/UNSTRING keywords
 	STRING
 	UNSTRING
@@ -93,6 +99,7 @@ const (
 
 	// Punctuation / operators
 	PERIOD
+	COMMA
 	LPAREN
 	RPAREN
 	EQUALS
@@ -155,6 +162,10 @@ var tokenNames = map[TokenType]string{
 	EXCEPTION:       "EXCEPTION",
 	NOT:             "NOT",
 	END_HTTP:        "END-HTTP",
+	PEEK:            "PEEK",
+	POKE:            "POKE",
+	PORT_IN:         "PORT-IN",
+	PORT_OUT:        "PORT-OUT",
 	STRING_LITERAL:  "STRING_LITERAL",
 	INTEGER_LITERAL: "INTEGER_LITERAL",
 	IDENTIFIER:      "IDENTIFIER",
@@ -181,6 +192,7 @@ var tokenNames = map[TokenType]string{
 	ALL:             "ALL",
 	TALLYING:        "TALLYING",
 	PERIOD:          ".",
+	COMMA:           ",",
 	LPAREN:          "(",
 	RPAREN:          ")",
 	EQUALS:          "=",
