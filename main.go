@@ -13,13 +13,22 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: cobolabunga <file.cbl>")
+	wasmTarget := false
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--wasm" {
+			wasmTarget = true
+			args = append(args[:i], args[i+1:]...)
+			break
+		}
+	}
+	if len(args) < 1 {
+		fmt.Println("Usage: cobolabunga [--wasm] <file.cbl>")
 		os.Exit(1)
 	}
 
 	// --- Phase 1: Lex ---
-	src, err := os.ReadFile(os.Args[1])
+	src, err := os.ReadFile(args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
 		os.Exit(1)
@@ -50,12 +59,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	base := filepath.Base(args[0])
+	name := base[:len(base)-len(filepath.Ext(base))]
+
 	// --- Phase 4: Codegen ---
 	cg := codegen.New(prog)
+	if wasmTarget {
+		cg.SetTarget("wasm32-unknown-wasi")
+	}
 	ir := cg.Generate()
-
-	base := filepath.Base(os.Args[1])
-	name := base[:len(base)-len(filepath.Ext(base))]
 
 	// Write IR to file
 	irName := name + ".ll"
@@ -67,36 +79,65 @@ func main() {
 
 	// Compile IR to object
 	objName := name + ".o"
-	cmd := exec.Command("llc", "-filetype=obj", "-o", objName, irName)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "llc error: %v\n%s\n", err, out)
-		os.Exit(1)
+	if wasmTarget {
+		cmd := exec.Command("llc", "-filetype=obj", "-march=wasm32", "-o", objName, irName)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "llc error: %v\n%s\n", err, out)
+			os.Exit(1)
+		}
+		fmt.Printf("Wrote %s\n", objName)
+	} else {
+		cmd := exec.Command("llc", "-filetype=obj", "-o", objName, irName)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "llc error: %v\n%s\n", err, out)
+			os.Exit(1)
+		}
+		fmt.Printf("Wrote %s\n", objName)
 	}
-	fmt.Printf("Wrote %s\n", objName)
 
 	// Link into executable
 	exeName := name
-	needHTTP := usesHTTP(prog)
-	if needHTTP {
-		// Build Go runtime as C archive
-		runtimeDir := "runtime"
-		runtimeLib := runtimeDir + "/libruntime.a"
-		buildCmd := exec.Command("go", "build", "-buildmode=c-archive",
-			"-o", filepath.Base(runtimeLib), ".")
-		buildCmd.Dir = runtimeDir
-		if out, err := buildCmd.CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "runtime build error: %v\n%s\n", err, out)
+	if wasmTarget {
+		exeName = name + ".wasm"
+		needHTTP := usesHTTP(prog)
+		if needHTTP {
+			fmt.Fprintf(os.Stderr, "Error: HTTP features not supported in WASM target\n")
 			os.Exit(1)
 		}
-		cmd = exec.Command("clang", "-no-pie", "-o", exeName, objName, runtimeLib)
+		cmd := exec.Command("clang", "--target=wasm32-wasip1",
+			"--sysroot=/usr/share/wasi-sysroot",
+			"-o", exeName, objName)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "clang (wasm) error: %v\n%s\n", err, out)
+			os.Exit(1)
+		}
+		fmt.Printf("Wrote %s\n", exeName)
 	} else {
-		cmd = exec.Command("clang", "-no-pie", "-o", exeName, objName)
+		needHTTP := usesHTTP(prog)
+		if needHTTP {
+			runtimeDir := "runtime"
+			runtimeLib := runtimeDir + "/libruntime.a"
+			buildCmd := exec.Command("go", "build", "-buildmode=c-archive",
+				"-o", filepath.Base(runtimeLib), ".")
+			buildCmd.Dir = runtimeDir
+			if out, err := buildCmd.CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "runtime build error: %v\n%s\n", err, out)
+				os.Exit(1)
+			}
+			cmd := exec.Command("clang", "-no-pie", "-o", exeName, objName, runtimeLib)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "clang error: %v\n%s\n", err, out)
+				os.Exit(1)
+			}
+		} else {
+			cmd := exec.Command("clang", "-no-pie", "-o", exeName, objName)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "clang error: %v\n%s\n", err, out)
+				os.Exit(1)
+			}
+		}
+		fmt.Printf("Wrote %s\n", exeName)
 	}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "clang error: %v\n%s\n", err, out)
-		os.Exit(1)
-	}
-	fmt.Printf("Wrote %s\n", exeName)
 }
 
 func usesHTTP(prog *parser.Program) bool {
